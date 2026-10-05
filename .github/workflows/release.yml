@@ -97,15 +97,18 @@ jobs:
         if: startsWith(matrix.target, 'bun-darwin')
         run: codesign --force --sign - "out/${{ matrix.asset }}"
 
-      # The runners reach greasyfork.org directly, so this catches a binary that
-      # builds but cannot actually run or talk to the API.
+      # The runners reach greasyfork.org directly. `--version` is the hard check:
+      # it proves the binary runs at all (and that the version stamp landed).
+      # The search is best-effort on purpose — a release should not be blocked by
+      # a third-party site being briefly unreachable or rate-limiting CI's IP.
       - name: Smoke test
         if: startsWith(matrix.target, 'bun-linux')
         shell: bash
         run: |
           chmod +x "out/${{ matrix.asset }}"
           "out/${{ matrix.asset }}" --version
-          "out/${{ matrix.asset }}" search bilibili -n 2
+          "out/${{ matrix.asset }}" search bilibili -n 2 \
+            || echo "::warning::smoke search failed (network-dependent, not fatal)"
 
       - uses: actions/upload-artifact@v4
         with:
