@@ -1,0 +1,60 @@
+{
+  "name": "greasyfork-cli",
+  "version": "0.1.0",
+  "description": "Search, inspect and download Greasy Fork userscripts from the terminal. Zero runtime dependencies.",
+  "keywords": [
+    "greasyfork",
+    "greasy",
+    "userscript",
+    "tampermonkey",
+    "violentmonkey",
+    "greasemonkey",
+    "cli",
+    "api",
+    "client"
+  ],
+  "license": "MIT",
+  "author": "Weidows",
+  "homepage": "https://github.com/Weidows/greasyfork-cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Weidows/greasyfork-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Weidows/greasyfork-cli/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "gfc": "./dist/cli.js",
+    "greasyfork-cli": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/inject-version.mjs",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  },
+  "dependencies": {}
+}

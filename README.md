@@ -1,124 +1,153 @@
 # greasyfork-cli
 
-命令行浏览、搜索、下载 [Greasy Fork](https://greasyfork.org) 用户脚本。
+Search, inspect and download [Greasy Fork](https://greasyfork.org) userscripts from the
+terminal. Zero runtime dependencies.
 
-两层结构：
+Ships two things from one source tree:
 
-- **`package greasyfork`**（仓库根）= 可 `import` 的客户端库，零第三方依赖
-- **`cmd/gf`** = 薄壳 CLI，编译成一个静态二进制
+- **`greasyfork-cli`** — the importable library (typed, ESM)
+- **`gfc`** / **`greasyfork-cli`** — the CLI
 
-> **边界**：Greasy Fork 有**官方只读 JSON API**，只是没写进文档（help/api 只说"去页面上找 `<link rel="alternate" type="application/json">`"）。本项目的端点是实测 + 开源仓库 `config/routes.rb` 交叉验证得出的。
-> **不做**：发脚本 / 评分 / 评论 / 收藏 —— 那些需要登录 session + CSRF，属于另一个量级的工作，故意不实现。
+> **Scope.** Greasy Fork has a real read-only JSON API, it just is not documented: the
+> help page only says to look for `<link rel="alternate" type="application/json">` on any
+> page. Every endpoint below was verified against the live site.
+> **Not supported:** publishing, rating, commenting or favouriting — those need a logged-in
+> session plus CSRF, and are deliberately out of scope.
 
-## 安装
-
-```bash
-# 需要 Go 1.24+
-go install github.com/Weidows/greasyfork-cli/cmd/gf@latest
-
-# 或从源码
-git clone https://github.com/Weidows/greasyfork-cli
-cd greasyfork-cli && go build -o gf ./cmd/gf
-```
-
-**零依赖**：`go.mod` 里没有任何 require，`go install` 不需要拉第三方包（连 CLI 参数解析都是自己写的，见下方"设计取舍"）。
-
-## 用法
+## Install
 
 ```bash
-gf search bilibili                 # 搜索
-gf search --sort created -n 10     # 最新发布；updated/installs/rating/name
-gf search --site bilibili.com      # 只搜某个站点的脚本
-gf --locale zh-CN search 视频      # 中文站点
-gf info 405130                     # 详情
-gf download 405130 -o ./scripts --with-meta
-gf cat 405130 | less               # 看源码
-gf versions 405130                 # 历史版本
-gf user 584991-windrunnermax       # 某作者的全部脚本
-gf sites -n 20                     # 站点脚本数量排行
-gf open 405130 --launch            # 打开脚本页
-gf check ./scripts                 # 检查本地脚本是否过时
+npm i -g greasyfork-cli     # or: npx greasyfork-cli search bilibili
 ```
 
-`<script>` 接受 `405130`、`405130-slug`、或完整 URL。
+Requires Node 18+ (uses the built-in `node:test`-era standard library only). **No runtime
+dependencies** — `npm ls greasyfork-cli` shows nothing beyond this package.
 
-### 全局参数（放子命令前后都行）
+## Usage
 
-```
---proxy URL     代理，如 http://127.0.0.1:7890（默认自动探测）
---no-proxy      完全不走代理
---timeout SECS  单请求超时（默认 30）
---locale CODE   站点语言，en / zh-CN …（默认 en）
--v, --verbose   打印每个请求
---json          机器可读输出（search / info / versions / user / sites）
-```
-
-### 作为库使用
-
-```go
-import greasyfork "github.com/Weidows/greasyfork-cli"
-
-c := greasyfork.NewClient(greasyfork.WithLocale("zh-CN"))
-
-res, err := c.Search(ctx, greasyfork.SearchOptions{Query: "bilibili", PerPage: 10})
-if err != nil { return err }
-for _, s := range res.Query {
-    fmt.Println(s.ID, s.Name, s.Author(), s.DailyInstalls)
-}
-
-s, _ := c.Script(ctx, 405130)
-body, _ := c.Raw(ctx, s.CodeURL)               // 原始脚本源码
-meta := greasyfork.ParseUserscriptMeta(string(body))
-updates := greasyfork.IsNewer(meta.First("version"), "6.0.0")
+```bash
+gfc search bilibili                # search
+gfc search --sort created -n 10    # newest; also updated / installs / rating / name
+gfc search --site bilibili.com     # only scripts for one site
+gfc --locale zh-CN search 视频     # Chinese site
+gfc info 405130                    # details
+gfc download 405130 -o ./scripts --with-meta
+gfc cat 405130 | less              # print source
+gfc versions 405130                # release history
+gfc user 584991-windrunnermax      # everything by one author
+gfc sites -n 20                    # scripts per site
+gfc open 405130 --launch           # open the script page
+gfc check ./scripts                # check local scripts for updates
 ```
 
-`NewClient` 自动复用机器上已有的代理（环境变量 → `git config --global https.proxy`），
-所以国内环境不用额外配置。
+`<script>` accepts `405130`, `405130-slug`, or a full URL.
 
-## 设计取舍
+### Global flags (before or after the subcommand)
 
-| 决定 | 为什么 |
+```
+--proxy URL     proxy, e.g. http://127.0.0.1:7890 (auto-detected)
+--no-proxy      never use a proxy
+--timeout SECS  per-request timeout (default 30)
+--locale CODE   site locale, e.g. en or zh-CN (default en)
+-v, --verbose   log every request
+--json          machine-readable output (search / info / versions / user / sites)
+```
+
+### As a library
+
+```ts
+import { Client } from 'greasyfork-cli';
+
+const client = new Client({ locale: 'zh-CN' });
+
+const { query } = await client.search({ query: 'bilibili', perPage: 10 });
+for (const s of query) console.log(s.id, s.name, s.daily_installs);
+
+const script = await client.script(405130);
+const source = await client.raw(script.code_url!);      // raw userscript text
+const meta = parseUserscriptMeta(source);
+console.log(meta.get('version'), meta.get('match'));
+```
+
+`new Client()` reuses whatever proxy the machine already has, so a CN environment needs no
+extra configuration.
+
+## The proxy problem (read this before editing the transport)
+
+`node:https` and the global `fetch` (undici) **both ignore `HTTP_PROXY` / `HTTPS_PROXY`**.
+Greasy Fork is unreachable from mainland China without a proxy, so this cannot be left to the
+environment. Measured on this machine: with `HTTPS_PROXY` exported, `fetch` to
+`api.greasyfork.org` fails after ~10.5 s; the hand-rolled tunnel below returns 200 in ~2 s.
+
+`src/proxy.ts` therefore implements HTTPS-over-proxy itself: `CONNECT` + `tls.connect`,
+roughly 80 lines, no dependency. The proxy is discovered in this order:
+
+1. `GREASYFORK_CLI_PROXY`, `https_proxy`, `HTTPS_PROXY`, `http_proxy`, `HTTP_PROXY`
+2. `git config --global https.proxy` (many machines only configure git)
+
+Only `http://` and `https://` proxies are supported; a `socks5://` URL is rejected loudly
+rather than silently failing.
+
+## Redirects are load-bearing
+
+`greasyfork.org/<locale>/scripts/<id>.json` (and `versions.json`, `users/<who>.json`) answer
+**308** to `api.greasyfork.org/...`. `node:http` does not follow redirects, so `src/http.ts`
+does it manually. Without that, every main-site endpoint returns an empty 308 body that looks
+like an empty JSON reply — which is exactly how `info`, `download`, `cat`, `versions` and
+`user` all failed the first time.
+
+## Endpoints used
+
+| Purpose | Endpoint |
 |---|---|
-| **零第三方依赖** | 用户偏好"不要杂七杂八的依赖"；`go install` 拉包在国内也可能失败 |
-| **自己写参数解析而非 stdlib `flag`** | `flag` 遇到第一个位置参数就停止解析，`gf download 405130 -o dir` 里的 `-o` 会被静默丢弃 |
-| **自己算 CJK/emoji 显示宽度而非 `go-runewidth`** | 脚本名一堆 🔥 和中文，`tabwriter` 会错位；为省一个依赖值得自己写 60 行 |
-| **`rune` 级宽度表** | 保证 `ID / Name / Fan` 各列在混合中英 emoji 时仍对齐（有单测守着） |
+| search / sort | `GET api.greasyfork.org/scripts.json?q=&page=&per_page=&sort=&locale=` |
+| by site | `GET api.greasyfork.org/scripts/by-site/<site>.json` |
+| site chart | `GET api.greasyfork.org/scripts/by-site.json` → `{site: count}` (a map, not a list) |
+| script detail | `GET api.greasyfork.org/scripts/<id>-<slug>.json` |
+| resolve slug | `GET greasyfork.org/<locale>/scripts/<id>.json` (308 → above) |
+| version history | `GET greasyfork.org/<locale>/scripts/<id>/versions.json` (308) |
+| user's scripts | `GET greasyfork.org/<locale>/users/<id\|slug>.json` (308) |
+| raw code | `https://update.greasyfork.org/scripts/<id>/<name>.user.js` |
+| update meta | same URL with `.user.js` → `.meta.js` |
 
-## 实测的接口
+**Biggest gotcha:** `greasyfork.org/<locale>/scripts.json` **ignores** `q` / `page` / `sort`
+and always returns the default chart. Search must go through the `api.` subdomain.
 
-| 用途 | 端点 |
-|---|---|
-| 搜索 / 排序 | `GET api.greasyfork.org/scripts.json?q=&page=&per_page=&sort=&locale=` |
-| 按站点 | `GET api.greasyfork.org/scripts/by-site/<site>.json` |
-| 站点清单 | `GET api.greasyfork.org/scripts/by-site.json` → `{site: count}`（是 map 不是 list） |
-| 脚本详情 | `GET api.greasyfork.org/scripts/<id>-<slug>.json` |
-| 解析 slug | `GET greasyfork.org/<locale>/scripts/<id>.json` |
-| 历史版本 | `GET greasyfork.org/<locale>/scripts/<id>/versions.json` |
-| 用户脚本 | `GET greasyfork.org/<locale>/users/<id\|slug>.json` |
-| 原始代码 | `https://update.greasyfork.org/scripts/<id>/<name>.user.js` |
-| 更新元数据 | 同上去掉 `.user.js` 换 `.meta.js` |
+Versioned code URLs carry a query string (`.../style.user.js?version=1284070`), so filenames
+and `.meta.js` derivation strip the query first.
 
-**最大的坑**：`greasyfork.org/<locale>/scripts.json` 会**忽略** `q/page/sort`，永远返回默认榜单；
-搜索必须走 `api.greasyfork.org` 子域。`?sort=` 支持 `created/updated/installs/rating/name`。
-
-## 注意
-
-- **无 API 承诺**：端点是非文档化的，随时可能变。全部集中在 `client.go` 顶部。
-- **限速**：`robots.txt` 是 `Crawl-delay: 1`，批量调用请自行加延迟。
-- **网络**：国内直连 `greasyfork.org` / `api.greasyfork.org` 不通，需代理（工具会自动读 git 配置）。
-
-## 开发
+## Development
 
 ```bash
-go build ./...            # 构建
-go vet ./...              # 静态检查
-go test ./... -count=1    # 单元测试（纯离线，不联网）
-gofmt -l .                # 格式检查
-
-# 交叉编译
-CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/gf-linux-amd64   ./cmd/gf
-CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/gf-darwin-arm64  ./cmd/gf
-
-# 注入版本号
-go build -ldflags "-s -w -X github.com/Weidows/greasyfork-cli.Version=1.0.0" -o gf ./cmd/gf
+npm install
+npm run typecheck     # tsc --noEmit over src + tests
+npm test              # vitest (offline, no network)
+npm run build         # tsc -> dist/ + inject the version from package.json
+npm pack --dry-run    # inspect what would be published
 ```
+
+`scripts/inject-version.mjs` stamps `package.json`'s version into the compiled
+`__VERSION__` placeholder, so the published code never has to resolve `package.json` at
+runtime (its relative path changes under `dist/`).
+
+### Install-verification before publishing
+
+```bash
+npm pack
+npm i -g ./greasyfork-cli-0.1.0.tgz
+gfc --version && gfc search bilibili -n 3
+npm uninstall -g greasyfork-cli
+```
+
+## Notes
+
+- **No API promise:** these endpoints are undocumented and can change. They are centralised in
+  `src/client.ts`.
+- **Rate limit:** `robots.txt` asks for `Crawl-delay: 1`. Add delays in loops; prefer the bulk
+  `scripts.json` (100 per page) over per-script calls.
+- **Publishing** has no API. There is only a prefill URL that populates the form for a human to
+  submit: `POST greasyfork.org/<locale>/script_versions/prefill`, which needs a session cookie.
+
+## Licence
+
+MIT

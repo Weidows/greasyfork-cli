@@ -1,8 +1,9 @@
-# binaries
-/gf
-/gf.exe
-/dist/
+# build output + deps
+node_modules/
+dist/
+*.tgz
 
 # local scratch from manual testing
 _t/
 _g/
+.tmp/
