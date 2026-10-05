@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * gfc — Greasy Fork CLI.
+ * gf — Greasy Fork CLI.
  *
  * A thin shell over the library in this package: search, inspect and download
  * userscripts from the terminal.
@@ -58,7 +58,7 @@ function buildClient(values: Values): Client {
 /** Parse a command's args, handling `--help` uniformly. */
 function parse(cmd: Command, argv: string[]): ParsedCommand {
   if (hasHelpFlag(argv)) {
-    out(`usage: gfc ${cmd.usage}`);
+    out(`usage: gf ${cmd.usage}`);
     out('');
     out(cmd.brief);
     out('');
@@ -70,7 +70,7 @@ function parse(cmd: Command, argv: string[]): ParsedCommand {
 
 function requirePositional(positionals: string[], usage: string): string {
   const first = positionals[0];
-  if (!first) throw new Error(`usage: gfc ${usage}`);
+  if (!first) throw new Error(`usage: gf ${usage}`);
   return first;
 }
 
@@ -308,7 +308,7 @@ async function cmdOpen(argv: string[]): Promise<void> {
 
 async function cmdCheck(argv: string[]): Promise<void> {
   const { values, positionals } = parse(checkCommand, argv);
-  if (positionals.length === 0) throw new Error('usage: gfc check <path...>');
+  if (positionals.length === 0) throw new Error('usage: gf check <path...>');
   const client = buildClient(values);
 
   const files: string[] = [];
@@ -473,10 +473,10 @@ export const COMMANDS: Command[] = [
 ];
 
 function usage(): void {
-  out('gfc — search, inspect and download Greasy Fork userscripts');
+  out('gf — search, inspect and download Greasy Fork userscripts');
   out('');
   out('Usage:');
-  out('  gfc [global flags] <command> [flags] [args]');
+  out('  gf [global flags] <command> [flags] [args]');
   out('');
   out('Commands:');
   for (const c of COMMANDS) out(`  ${c.usage.padEnd(74)} ${c.brief}`);
@@ -506,19 +506,19 @@ async function main(argv: string[]): Promise<void> {
   }
   const first = argv[0]!;
 
-  // A bare global flag with no subcommand, e.g. `gfc -h` / `gfc --version`.
+  // A bare global flag with no subcommand, e.g. `gf -h` / `gf --version`.
   if (first === '-h' || first === '--help') {
     usage();
     return;
   }
   if (first === '--version' || first === 'version') {
-    out(`gfc ${VERSION}`);
+    out(`gf ${VERSION}`);
     return;
   }
   if (first === 'help') {
     const target = findCommand(argv[1]);
     if (target) {
-      out(`usage: gfc ${target.usage}`);
+      out(`usage: gf ${target.usage}`);
       out('');
       out(target.brief);
     } else {

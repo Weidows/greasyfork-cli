@@ -28,8 +28,7 @@
     "node": ">=18"
   },
   "bin": {
-    "gfc": "./dist/cli.js",
-    "greasyfork-cli": "./dist/cli.js"
+    "gf": "./dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

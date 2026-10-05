@@ -1,0 +1,137 @@
+name: release
+
+# Builds the prebuilt binaries and attaches them to a GitHub Release.
+#
+# Trigger by pushing a v* tag, or manually from the Actions tab (the manual run
+# asks for the version so tag and package.json cannot drift apart).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.1.1 (must equal package.json's version)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Guards the classic slip of tagging v0.2.0 while package.json still says
+      # 0.1.0, which would ship a binary and an npm version that disagree.
+      - id: v
+        run: |
+          set -euo pipefail
+          pkg=$(node -p "require('./package.json').version")
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+            source="manual input"
+          else
+            version="${GITHUB_REF_NAME#v}"
+            source="tag ${GITHUB_REF_NAME}"
+          fi
+          if [ "$version" != "$pkg" ]; then
+            echo "::error::version from $source ($version) does not match package.json ($pkg)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: meta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: bun-linux-x64,    runner: ubuntu-latest,  asset: gf-linux-x64 }
+          - { target: bun-linux-arm64,  runner: ubuntu-latest,  asset: gf-linux-arm64 }
+          - { target: bun-windows-x64,  runner: windows-latest, asset: gf-windows-x64.exe }
+          - { target: bun-darwin-x64,   runner: macos-14,       asset: gf-darwin-x64 }
+          - { target: bun-darwin-arm64, runner: macos-14,       asset: gf-darwin-arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build with Node so the version stamp runs: __VERSION__ is a whole string
+      # literal in dist/, and compiling straight from src/ would ship a binary
+      # whose `--version` prints the literal placeholder.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      # Bun bundles dist/ into one self-contained executable and cross-compiles
+      # every target, but each target still builds on its own runner so the
+      # macOS code signature below stays possible.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned to the version the proxy tunnel was verified against locally.
+          # `latest` would silently change the compiler under a released tag.
+          bun-version: 1.3.14
+      - name: Compile
+        shell: bash
+        run: |
+          mkdir -p out
+          bun build ./dist/cli.js --compile --minify \
+            --target=${{ matrix.target }} \
+            --outfile "out/${{ matrix.asset }}"
+          ls -l out
+
+      # A downloaded arm64 binary is killed on sight without any signature; an
+      # ad-hoc signature is enough for files fetched with curl or a browser.
+      - name: Ad-hoc codesign
+        if: startsWith(matrix.target, 'bun-darwin')
+        run: codesign --force --sign - "out/${{ matrix.asset }}"
+
+      # The runners reach greasyfork.org directly, so this catches a binary that
+      # builds but cannot actually run or talk to the API.
+      - name: Smoke test
+        if: startsWith(matrix.target, 'bun-linux')
+        shell: bash
+        run: |
+          chmod +x "out/${{ matrix.asset }}"
+          "out/${{ matrix.asset }}" --version
+          "out/${{ matrix.asset }}" search bilibili -n 2
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: out/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd out
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: ${{ needs.meta.outputs.tag }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: out/*

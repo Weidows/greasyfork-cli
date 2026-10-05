@@ -3,11 +3,11 @@
  *
  * Built on `node:util` `parseArgs` (no dependency) — but with one addition the
  * stdlib does not cover: global flags written BEFORE the subcommand must reach
- * the subcommand. `gfc --locale zh-CN search video` parses the leading flag,
+ * the subcommand. `gf --locale zh-CN search video` parses the leading flag,
  * then the command parses only its own tail, so the value would be silently
  * dropped unless it is captured and merged here.
  *
- * `parseArgs` itself already tolerates interleaving (`gfc download 405130 -o dir`
+ * `parseArgs` itself already tolerates interleaving (`gf download 405130 -o dir`
  * keeps `-o`), which the earlier Go port needed a hand-written parser for.
  */
 

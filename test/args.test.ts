@@ -44,7 +44,7 @@ describe('locateSubcommand', () => {
 });
 
 describe('parseCommand: global flags before the subcommand are inherited', () => {
-  // Regression guard: `gfc --locale zh-CN search video` used to drop the locale,
+  // Regression guard: `gf --locale zh-CN search video` used to drop the locale,
   // because the command re-parsed only its own tail.
   it('inherits --locale from before the subcommand', () => {
     const parsed = parseCommand(['--locale', 'zh-CN', 'search', 'video', '-n', '5'], searchOptions);
@@ -66,7 +66,7 @@ describe('parseCommand: global flags before the subcommand are inherited', () =>
 });
 
 describe('parseCommand: flags and positionals interleave', () => {
-  // `gfc download 405130 -o dir --with-meta` must keep -o; the stdlib flag parser
+  // `gf download 405130 -o dir --with-meta` must keep -o; the stdlib flag parser
   // in other languages stops at the first positional.
   it('keeps a flag placed after a positional', () => {
     const parsed = parseCommand(

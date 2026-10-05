@@ -27,7 +27,7 @@ function walk(dir) {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) found.push(...walk(full));
-    else if (entry.endsWith('.js')) found.push(full);
+    else if (entry.endsWith('.js') || entry.endsWith('.d.ts')) found.push(full);
   }
   return found;
 }
@@ -38,6 +38,14 @@ for (const file of walk(join(root, 'dist'))) {
   if (!source.includes(marker)) continue;
   writeFileSync(file, source.replaceAll(marker, version));
   patched++;
+}
+
+// Verify rather than trust the count: a surviving placeholder is invisible when
+// it lands in a .d.ts, and very visible when a binary prints `gf __VERSION__`.
+const missed = walk(join(root, 'dist')).filter((f) => readFileSync(f, 'utf8').includes(marker));
+if (missed.length > 0) {
+  console.error(`inject-version: placeholder survived in: ${missed.join(', ')}`);
+  process.exit(1);
 }
 
 if (patched === 0) {
