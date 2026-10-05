@@ -1,0 +1,8 @@
+# binaries
+/gf
+/gf.exe
+/dist/
+
+# local scratch from manual testing
+_t/
+_g/
