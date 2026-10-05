@@ -1,11 +1,14 @@
-# greasyfork-cli
+# @greasyfork/cli
 
 Search, inspect and download [Greasy Fork](https://greasyfork.org) userscripts from the
 terminal. Zero runtime dependencies.
 
-Ships two things from one source tree:
+> **Unofficial.** This is a community client, not affiliated with or endorsed by Greasy Fork
+> or its maintainers. It only reads the site's public JSON endpoints.
+>
+> Ships two things from one source tree:
 
-- **`greasyfork-cli`** — the importable library (typed, ESM)
+- **`@greasyfork/cli`** — the importable library (typed, ESM)
 - **`gfc`** / **`greasyfork-cli`** — the CLI
 
 > **Scope.** Greasy Fork has a real read-only JSON API, it just is not documented: the
@@ -17,7 +20,7 @@ Ships two things from one source tree:
 ## Install
 
 ```bash
-npm i -g greasyfork-cli     # or: npx greasyfork-cli search bilibili
+npm i -g @greasyfork/cli     # or: npx @greasyfork/cli search bilibili
 ```
 
 Requires Node 18+ (uses the built-in `node:test`-era standard library only). **No runtime
@@ -56,7 +59,7 @@ gfc check ./scripts                # check local scripts for updates
 ### As a library
 
 ```ts
-import { Client } from 'greasyfork-cli';
+import { Client } from '@greasyfork/cli';
 
 const client = new Client({ locale: 'zh-CN' });
 
@@ -136,7 +139,7 @@ runtime (its relative path changes under `dist/`).
 npm pack
 npm i -g ./greasyfork-cli-0.1.0.tgz
 gfc --version && gfc search bilibili -n 3
-npm uninstall -g greasyfork-cli
+npm uninstall -g @greasyfork/cli
 ```
 
 ## Notes
