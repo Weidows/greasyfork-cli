@@ -1,0 +1,28 @@
+version: 2
+
+updates:
+  # Dev tooling. Grouped so a vitest/vite/esbuild bump arrives as ONE pull
+  # request instead of four that conflict with each other in the lockfile.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        patterns: ['*']
+      # There are no runtime dependencies today. Kept separate on purpose: if one
+      # is ever added, it should get its own reviewable PR rather than ride along
+      # with tooling bumps.
+      production-dependencies:
+        dependency-type: production
+        patterns: ['*']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']

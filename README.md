@@ -197,16 +197,46 @@ npm uninstall -g @greasyfork/cli
 
 ## Releasing
 
-Push a tag and CI compiles every platform into a GitHub Release:
+Two workflows listen on `v*` tags, on purpose — one ships binaries, one ships npm. They fail
+independently.
 
 ```bash
 npm version patch        # or minor / major, bumps package.json
 git push --follow-tags
 ```
 
-You can also run the `release` workflow manually from the Actions tab; it asks for the
-version and fails if it does not match `package.json`, so the tarball and the release can
-never disagree.
+| Workflow file | What it does |
+|---|---|
+| `.github/workflows/release.yml` | Compiles all five platforms, ad-hoc signs the macOS ones, writes `SHA256SUMS.txt`, publishes a GitHub Release |
+| `.github/workflows/publish-npm.yml` | Publishes `@greasyfork/cli` to npm with provenance |
+
+Both can also be started by hand from the Actions tab; each asks for the version and fails if
+it does not match `package.json`, so a tarball, a binary and an npm version can never disagree.
+
+### Enabling the npm publish
+
+`publish-npm.yml` needs one of these before it can publish:
+
+**Option A — npm token (works immediately).** On npmjs.com create a **Granular Access Token**:
+
+- Permissions: read + write, scoped to the `@greasyfork` org
+- **Bypass 2FA: enabled** — this is required, because the account uses `auth-and-writes` 2FA
+  and a CI runner cannot type a one-time password
+
+Then store it as the repository secret `NPM_TOKEN`
+(Settings → Secrets and variables → Actions → New repository secret).
+
+**Option B — Trusted Publisher (no secret at all).** After the package exists on npm once,
+add a Trusted Publisher in the package settings: repository `Weidows/greasyfork-cli`, workflow
+**`publish-npm.yml`**, environment **left empty**. Then delete the `NODE_AUTH_TOKEN` line from
+the workflow. This also gives you provenance for free.
+
+> **The workflow file name is part of the configuration.** A Trusted Publisher binds to the
+> repository *and* the workflow file name, so renaming `publish-npm.yml` silently breaks it.
+
+The workflow upgrades npm before publishing: Node 22 ships npm 10.x, and trusted publishing
+requires npm ≥ 11.5.1. It also skips cleanly when the version is already on npm, so re-pushing
+a tag does not turn the run red.
 
 ## Notes
 

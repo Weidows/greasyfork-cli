@@ -18,7 +18,9 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  # A superseded release run should be dropped, not queued behind the new one:
+  # otherwise a re-pushed tag leaves the older run waiting for a runner.
+  cancel-in-progress: true
 
 jobs:
   meta:

@@ -1,0 +1,83 @@
+name: publish-npm
+
+# Publishes @greasyfork/cli to npm. Kept separate from release.yml (which builds
+# the platform binaries) so the two can fail independently.
+#
+# IMPORTANT: npm's Trusted Publisher binds to the WORKFLOW FILE NAME. If you set
+# up trusted publishing on npmjs.com, this file must stay named publish-npm.yml,
+# and the npm form's "Environment" field must be left EMPTY (this workflow
+# declares no `environment:`).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish; must equal package.json's version"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write # required for --provenance (and for trusted publishing)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      # Node 22 ships npm 10.x. Trusted publishing needs npm >= 11.5.1, and
+      # --provenance wants a recent npm as well, so upgrade it explicitly.
+      - run: npm install -g npm@latest
+
+      - run: npm ci
+
+      # Guards the classic slip of tagging v0.2.0 while package.json still says
+      # 0.1.0 — npm would then publish the wrong version, or fail confusingly.
+      - name: Version must match package.json
+        run: |
+          set -euo pipefail
+          want="${{ inputs.version || github.ref_name }}"
+          want="${want#v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$want" != "$pkg" ]; then
+            echo "::error::version $want does not match package.json $pkg"
+            exit 1
+          fi
+          echo "publishing @greasyfork/cli@$pkg"
+
+      # Two reasons to do nothing, both reported as a notice rather than a
+      # failure: no token configured yet, or this version is already on npm.
+      # Re-pushing a tag should never leave a red X for a non-problem.
+      - name: Decide whether to publish
+        id: gate
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            echo "::notice::NPM_TOKEN is not configured — skipping the npm publish"
+            exit 0
+          fi
+          v=$(node -p "require('./package.json').version")
+          if npm view "@greasyfork/cli@$v" version >/dev/null 2>&1; then
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            echo "::notice::@greasyfork/cli@$v is already on npm — nothing to publish"
+          fi
+
+      # `prepublishOnly` runs `npm run build && npm test`, so build and tests
+      # happen right here. Never add --ignore-scripts: that would publish a
+      # package whose dist/ still contains the __VERSION__ placeholder.
+      - if: steps.gate.outputs.skip != '1'
+        run: npm publish --access public --provenance
+        env:
+          # A granular npm token scoped to @greasyfork with "Bypass 2FA" enabled.
+          # With a Trusted Publisher configured on npm, this line can be deleted.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

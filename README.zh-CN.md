@@ -160,14 +160,36 @@ bun build ./dist/cli.js --compile --minify --target=bun-windows-x64 --outfile gf
 
 ## 发版
 
-打 tag 即触发 CI 编译全部平台并发布到 Release：
+有**两个** workflow 都监听 `v*` tag，这是有意为之 —— 一个产二进制，一个发 npm，两者互不拖累。
 
 ```bash
 npm version patch        # 或 minor / major，会同步 package.json
 git push --follow-tags
 ```
 
-也可以到 Actions 页面手动触发 `release`，填版本号（必须与 `package.json` 一致，否则 workflow 会直接失败）。
+| workflow 文件 | 作用 |
+|---|---|
+| `.github/workflows/release.yml` | 编译 5 个平台、给 macOS 产物做 ad-hoc 签名、生成 `SHA256SUMS.txt`、发布 GitHub Release |
+| `.github/workflows/publish-npm.yml` | 把 `@greasyfork/cli` 发到 npm，并带 provenance |
+
+两者也都可以在 Actions 页面手动触发，都需要填版本号（与 `package.json` 不一致会直接失败），所以 tarball / 二进制 / npm 版本三者不可能对不上。
+
+### 开启 npm 自动发布
+
+`publish-npm.yml` 需要下面二选一：
+
+**方案 A —— npm token（立刻可用）**。到 npmjs.com 建 **Granular Access Token**：
+
+- 权限：read + write，范围限定 `@greasyfork` org
+- **Bypass 2FA：必须开启** —— 因为账号 2FA 是 `auth-and-writes`，而 CI runner 没法输入一次性验证码
+
+然后存到仓库 secret `NPM_TOKEN`（Settings → Secrets and variables → Actions → New repository secret）。
+
+**方案 B —— Trusted Publisher（完全不用 secret）**。包在 npm 上存在过一次之后，到包设置里加 Trusted Publisher：仓库填 `Weidows/greasyfork-cli`，workflow 填 **`publish-npm.yml`**，**Environment 留空**。然后把 workflow 里那行 `NODE_AUTH_TOKEN` 删掉即可，顺带免费获得 provenance。
+
+> **workflow 文件名本身是配置的一部分。** Trusted Publisher 绑定的是"仓库 + workflow 文件名"，改名 `publish-npm.yml` 会静默失效。
+
+workflow 在发布前会先升级 npm：Node 22 自带 npm 10.x，而 trusted publishing 需要 npm ≥ 11.5.1。另外它检测到该版本已在 npm 上会**直接跳过**，所以重推 tag 不会把 run 弄红。
 
 ## 注意
 
