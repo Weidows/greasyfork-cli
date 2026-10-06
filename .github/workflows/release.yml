@@ -57,11 +57,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: bun-linux-x64,    runner: ubuntu-latest,  asset: gf-linux-x64 }
-          - { target: bun-linux-arm64,  runner: ubuntu-latest,  asset: gf-linux-arm64 }
-          - { target: bun-windows-x64,  runner: windows-latest, asset: gf-windows-x64.exe }
-          - { target: bun-darwin-x64,   runner: macos-14,       asset: gf-darwin-x64 }
-          - { target: bun-darwin-arm64, runner: macos-14,       asset: gf-darwin-arm64 }
+          - { target: bun-linux-x64,    runner: ubuntu-latest,  asset: gf-linux-x64,       smoke: true }
+          - { target: bun-linux-arm64,  runner: ubuntu-latest,  asset: gf-linux-arm64,     smoke: false }
+          - { target: bun-windows-x64,  runner: windows-latest, asset: gf-windows-x64.exe, smoke: true }
+          - { target: bun-darwin-x64,   runner: macos-14,       asset: gf-darwin-x64,      smoke: false }
+          - { target: bun-darwin-arm64, runner: macos-14,       asset: gf-darwin-arm64,    smoke: true }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -71,7 +71,8 @@ jobs:
       # whose `--version` prints the literal placeholder.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 22, not 20: vitest 5 requires ^22.12 and warns (EBADENGINE) below that.
+          node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run build
@@ -99,18 +100,20 @@ jobs:
         if: startsWith(matrix.target, 'bun-darwin')
         run: codesign --force --sign - "out/${{ matrix.asset }}"
 
-      # The runners reach greasyfork.org directly. `--version` is the hard check:
-      # it proves the binary runs at all (and that the version stamp landed).
-      # The search is best-effort on purpose — a release should not be blocked by
-      # a third-party site being briefly unreachable or rate-limiting CI's IP.
+      # Only a binary whose architecture matches the runner can actually execute.
+      # linux-arm64 and darwin-x64 are deliberately left out: running them would
+      # need emulation (QEMU / Rosetta), which would then be under test as much as
+      # the binary. Their compilation is still verified, and the artifact is still
+      # published. `--version` is the hard check; the live search is best-effort so
+      # a third-party outage or a rate-limited CI IP cannot block a release.
       - name: Smoke test
-        if: startsWith(matrix.target, 'bun-linux')
+        if: matrix.smoke
         shell: bash
         run: |
-          chmod +x "out/${{ matrix.asset }}"
+          chmod +x "out/${{ matrix.asset }}" || true
           "out/${{ matrix.asset }}" --version
           "out/${{ matrix.asset }}" search bilibili -n 2 \
-            || echo "::warning::smoke search failed (network-dependent, not fatal)"
+            || echo "::warning::live search failed (network-dependent, not fatal)"
 
       - uses: actions/upload-artifact@v4
         with:
