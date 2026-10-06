@@ -40,6 +40,46 @@ export function metaAll(meta: UserscriptMeta, key: string): string[] {
   return meta.get(key.toLowerCase()) ?? [];
 }
 
+const STYLE_BLOCK = /\/\*\s*==UserStyle==([\s\S]*?)==\/UserStyle==\s*\*\//;
+const STYLE_LINE = /^[ \t]*(?:\*|\/\*)?[ \t]*@(\S+)[ \t]+(.*?)[ \t]*$/gm;
+
+/**
+ * Metadata from a `/* ==UserStyle== … ==/UserStyle== *\/` block.
+ *
+ * Styles use the same `@key value` shape as scripts but inside a block comment,
+ * so each line may start with `*` (or `/*` on the first one). A file with no
+ * such block yields an empty map, which callers read as "not a userstyle".
+ */
+export function parseUserStyleMeta(source: string): UserscriptMeta {
+  const meta: UserscriptMeta = new Map();
+  const block = STYLE_BLOCK.exec(source)?.[1];
+  if (!block) return meta;
+  for (const match of block.matchAll(STYLE_LINE)) {
+    const key = match[1]!.toLowerCase();
+    const value = match[2]!;
+    const existing = meta.get(key);
+    if (existing) existing.push(value);
+    else meta.set(key, [value]);
+  }
+  return meta;
+}
+
+/**
+ * Metadata plus the flavour the source looks like.
+ *
+ * The server keys off the file's meta block (it demands `@version`, `@name` and,
+ * for a public JS script, an `@include`/`@match`), so publish has to know which
+ * block to read before it can refuse a bad upload locally.
+ */
+export function parseSourceMeta(source: string): {
+  meta: UserscriptMeta;
+  kind: 'js' | 'css';
+} {
+  const style = parseUserStyleMeta(source);
+  if (style.size > 0) return { meta: style, kind: 'css' };
+  return { meta: parseUserscriptMeta(source), kind: 'js' };
+}
+
 /**
  * Accept `405130`, `405130-slug` or a full Greasy Fork URL and return the id.
  * Throws when no id can be found, so a typo fails loudly instead of querying 0.

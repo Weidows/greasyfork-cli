@@ -12,11 +12,16 @@
  * Speaking HTTP/1.1 over a socket we opened ourselves behaves identically on Node
  * and Bun, and the response parsing lives in http1.ts, which is pure and unit
  * tested offline.
+ *
+ * The same transport serves the read-only JSON API and the logged-in HTML forms
+ * (login, publish): `request()` sends any method/headers/body and carries a
+ * cookie jar. `get()` stays the throwing read-only wrapper the API client uses.
  */
 
 import type { IncomingHttpHeaders } from 'node:http';
 import type { Duplex } from 'node:stream';
 
+import type { CookieJar } from './cookie.js';
 import { BodyReader, parseHead } from './http1.js';
 import { openSocket } from './proxy.js';
 
@@ -66,6 +71,24 @@ export interface HttpResponse {
   status: number;
   headers: IncomingHttpHeaders;
   body: string;
+  /**
+   * Where the response actually came from once redirects were followed.
+   *
+   * Form flows need this to tell "the POST succeeded and bounced me to the
+   * script's page" from "the POST failed and re-rendered the form" — both are a
+   * 200 with an HTML body, so the status code cannot discriminate.
+   */
+  finalUrl: string;
+  /** How many redirects were followed to get here. */
+  redirects: number;
+  /**
+   * `Set-Cookie` values, one entry per header line, in arrival order.
+   *
+   * Never read these from `headers['set-cookie']`: repeated headers are joined
+   * with ", " there, and a cookie's `Expires` attribute itself contains a comma,
+   * so a joined value cannot be split back apart.
+   */
+  setCookie: string[];
 }
 
 export interface RequestOptions {
@@ -78,6 +101,14 @@ export interface RequestOptions {
   proxyHint?: string;
   /** Maximum redirects to follow (default 5). */
   maxRedirects?: number;
+  /** HTTP method; default `GET`. */
+  method?: string;
+  /** Extra request headers, appended after the defaults. */
+  headers?: Record<string, string>;
+  /** Request body. Setting `Content-Type` is the caller's job. */
+  body?: Buffer | string;
+  /** Send this jar's cookies, and absorb whatever the response sets. */
+  jar?: CookieJar;
 }
 
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
@@ -85,45 +116,97 @@ const DEFAULT_USER_AGENT = 'gf';
 const MAX_HEAD = 64 * 1024;
 
 /**
- * GET a URL, following redirects, and read the whole body as text.
+ * Send a request, following redirects, and read the whole body as text.
+ *
+ * Error statuses are returned rather than thrown: a rejected publish answers
+ * **200** with the form re-rendered and the errors in the body, and a failed
+ * CSRF check is a 422 — so a form caller must be able to inspect the body.
+ * `get()` is the throwing wrapper for read-only calls.
  *
  * Redirect following is not optional: `greasyfork.org/<locale>/scripts/<id>.json`
  * answers **308** to `api.greasyfork.org/...` (verified). Without it every
  * main-site endpoint yields an empty body that reads as an empty JSON reply.
- *
- * Non-2xx responses raise `NotFoundError` / `RateLimitError` / `HttpError`, so
- * callers never mistake an error page for content.
  */
-export async function get(url: string, options: RequestOptions = {}): Promise<HttpResponse> {
+export async function request(url: string, options: RequestOptions = {}): Promise<HttpResponse> {
   const maxRedirects = options.maxRedirects ?? 5;
   let current = url;
+  let method = options.method ?? 'GET';
+  let body = options.body;
+  let headers = options.headers ?? {};
 
   for (let hop = 0; ; hop++) {
-    const res = await getOnce(current, options);
+    const res = await requestOnce(current, { ...options, method, body, headers });
     const location = res.headers.location;
     if (REDIRECT_STATUS.has(res.status) && typeof location === 'string' && location) {
       if (hop >= maxRedirects) {
         throw new HttpError(res.status, url, `too many redirects (stopped at ${current})`);
       }
+      // 303 always becomes GET; so do 301/302 for anything but GET/HEAD, which is
+      // what browsers do and what Rails expects after a successful form POST.
+      // 307/308 keep the method and body — replaying a POST there would publish
+      // the same script twice.
+      const downgrade =
+        res.status === 303 ||
+        ((res.status === 301 || res.status === 302) && method !== 'GET' && method !== 'HEAD');
+      if (downgrade) {
+        method = 'GET';
+        body = undefined;
+        // The body is gone, so its headers must go too, or the server waits for
+        // bytes that will never arrive.
+        const kept: Record<string, string> = {};
+        for (const [name, value] of Object.entries(headers)) {
+          const lower = name.toLowerCase();
+          if (lower !== 'content-type' && lower !== 'content-length') kept[name] = value;
+        }
+        headers = kept;
+      }
       current = new URL(location, current).toString();
       continue;
     }
-    return res;
+    return { ...res, finalUrl: current, redirects: hop };
   }
 }
 
+/**
+ * GET a URL, following redirects, raising on 4xx/5xx.
+ *
+ * Non-2xx responses raise `NotFoundError` / `RateLimitError` / `HttpError`, so
+ * read callers never mistake an error page for content. Form flows use
+ * `request()` instead, since they need to read the body of a failed POST.
+ */
+export async function get(url: string, options: RequestOptions = {}): Promise<HttpResponse> {
+  const res = await request(url, options);
+  if (res.status === 404) throw new NotFoundError(url);
+  if (res.status === 429) throw new RateLimitError(url);
+  if (res.status >= 400) throw new HttpError(res.status, url);
+  return res;
+}
+
 /** One request on one socket; no redirect following. */
-async function getOnce(url: string, options: RequestOptions): Promise<HttpResponse> {
-  const { proxy, timeoutMs = 30_000, accept, userAgent = DEFAULT_USER_AGENT, proxyHint } = options;
+async function requestOnce(url: string, options: RequestOptions): Promise<HttpResponse> {
+  const {
+    proxy,
+    timeoutMs = 30_000,
+    accept,
+    userAgent = DEFAULT_USER_AGENT,
+    proxyHint,
+    method = 'GET',
+    headers = {},
+    body,
+    jar,
+  } = options;
   const target = new URL(url);
   const secure = target.protocol === 'https:';
   const port = Number(target.port) || (secure ? 443 : 80);
+  const payload = typeof body === 'string' ? Buffer.from(body, 'utf8') : body;
 
   let sock: Duplex | undefined;
   let lastError: unknown;
-  // One retry, connection stage only: a fresh CONNECT+TLS through a proxy
-  // occasionally stalls on first use, and retrying is harmless for a GET.
-  for (let attempt = 0; attempt < 2 && !sock; attempt++) {
+  // Retry the connection stage once, for GETs only: a fresh CONNECT+TLS through
+  // a proxy occasionally stalls on first use and re-issuing a GET is harmless.
+  // A POST is never retried — a stalled write may still have reached the server.
+  const attempts = method === 'GET' ? 2 : 1;
+  for (let attempt = 0; attempt < attempts && !sock; attempt++) {
     try {
       sock = await openSocket({ host: target.hostname, port, secure, proxy, timeoutMs });
     } catch (err) {
@@ -140,7 +223,8 @@ async function getOnce(url: string, options: RequestOptions): Promise<HttpRespon
     let head: Buffer = Buffer.alloc(0);
     let reader: BodyReader | undefined;
     let status = 0;
-    let headers: IncomingHttpHeaders = {};
+    let responseHeaders: IncomingHttpHeaders = {};
+    let setCookie: string[] = [];
 
     const timer = setTimeout(
       () => fail(new NetworkError(url, new Error(`timed out after ${timeoutMs}ms`), proxyHint)),
@@ -161,7 +245,19 @@ async function getOnce(url: string, options: RequestOptions): Promise<HttpRespon
       clearTimeout(timer);
       socket.destroy();
       try {
-        resolve(build(status, headers, reader.body(), url));
+        const response: HttpResponse = {
+          status,
+          headers: responseHeaders,
+          setCookie,
+          body: reader.body().toString('utf8'),
+          // Rewritten by `request()` once redirects are resolved.
+          finalUrl: url,
+          redirects: 0,
+        };
+        // Absorb cookies before resolving, so the jar stays current even when
+        // the caller then throws on a 4xx.
+        jar?.absorb(response.setCookie);
+        resolve(response);
       } catch (err) {
         reject(err);
       }
@@ -185,7 +281,8 @@ async function getOnce(url: string, options: RequestOptions): Promise<HttpRespon
           return;
         }
         status = parsed.status;
-        headers = parsed.headers as IncomingHttpHeaders;
+        responseHeaders = parsed.headers as IncomingHttpHeaders;
+        setCookie = parsed.setCookie;
         try {
           reader = new BodyReader(parsed);
         } catch (err) {
@@ -222,25 +319,26 @@ async function getOnce(url: string, options: RequestOptions): Promise<HttpRespon
 
     socket.once('error', (err: Error) => fail(new NetworkError(url, err, proxyHint)));
 
-    socket.write(requestHead(target, port, secure, { accept, userAgent }));
+    const requestBytes = requestHead(target, port, secure, {
+      accept,
+      userAgent,
+      method,
+      headers,
+      body: payload,
+      jar,
+    });
+    // The head and the body must both be written. Sending only the head leaves
+    // the server waiting for the `Content-Length` bytes it was promised, which
+    // looks exactly like a hung request — this is what a GET-only transport looks
+    // like the moment it is asked to POST.
+    socket.write(
+      payload ? Buffer.concat([Buffer.from(requestBytes, 'latin1'), payload]) : requestBytes,
+    );
   });
 }
 
-/** Turn a raw response into the public shape, raising on error statuses. */
-function build(
-  status: number,
-  headers: IncomingHttpHeaders,
-  body: Buffer,
-  url: string,
-): HttpResponse {
-  if (status === 404) throw new NotFoundError(url);
-  if (status === 429) throw new RateLimitError(url);
-  if (status >= 400) throw new HttpError(status, url);
-  return { status, headers, body: body.toString('utf8') };
-}
-
 /**
- * Serialise a GET request head.
+ * Serialise a request head.
  *
  * `Accept-Encoding: identity` keeps bodies free of compression (nothing to gunzip
  * and no dependency), and `Connection: close` makes the body framing obvious.
@@ -249,18 +347,36 @@ function requestHead(
   target: URL,
   port: number,
   secure: boolean,
-  { accept, userAgent }: { accept?: string; userAgent: string },
+  {
+    accept,
+    userAgent,
+    method,
+    headers,
+    body,
+    jar,
+  }: {
+    accept?: string;
+    userAgent: string;
+    method: string;
+    headers: Record<string, string>;
+    body?: Buffer;
+    jar?: CookieJar;
+  },
 ): string {
   const defaultPort = secure ? 443 : 80;
   const hostHeader = port === defaultPort ? target.hostname : `${target.hostname}:${port}`;
   const lines = [
-    `GET ${target.pathname}${target.search} HTTP/1.1`,
+    `${method} ${target.pathname}${target.search} HTTP/1.1`,
     `Host: ${hostHeader}`,
     'Accept-Encoding: identity',
     'Connection: close',
     `User-Agent: ${userAgent}`,
   ];
   if (accept) lines.push(`Accept: ${accept}`);
+  const cookie = jar?.header();
+  if (cookie) lines.push(`Cookie: ${cookie}`);
+  if (body) lines.push(`Content-Length: ${body.length}`);
+  for (const [name, value] of Object.entries(headers)) lines.push(`${name}: ${value}`);
   return `${lines.join('\r\n')}\r\n\r\n`;
 }
 

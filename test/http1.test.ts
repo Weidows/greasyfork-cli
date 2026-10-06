@@ -17,7 +17,24 @@ describe('parseHead', () => {
     expect(head.status).toBe(308);
     expect(head.statusText).toBe('Permanent Redirect');
     expect(head.headers.location).toBe('https://a/b');
-    expect(head.headers['set-cookie']).toBe('x=1, y=2');
+    // Repeated headers are joined with ", " — EXCEPT set-cookie, which is kept as
+    // one entry per line. Joining them cannot be undone, because a cookie's
+    // `Expires` attribute itself contains a comma.
+    expect(head.headers['set-cookie']).toBeUndefined();
+    expect(head.setCookie).toEqual(['x=1', 'y=2']);
+  });
+
+  it('keeps a Set-Cookie whose Expires contains a comma intact', () => {
+    const head = parseHead(
+      crlf(
+        'HTTP/1.1 200 OK\r\n' +
+          'Set-Cookie: _greasyfork_session=abc; path=/; expires=Wed, 21 Oct 2026 07:28:00 GMT; secure; httponly\r\n' +
+          '\r\n',
+      ),
+    )!;
+    expect(head.setCookie).toHaveLength(1);
+    expect(head.setCookie[0]).toContain('_greasyfork_session=abc');
+    expect(head.setCookie[0]).toContain('expires=Wed, 21 Oct 2026 07:28:00 GMT');
   });
 
   it('exposes bytes that arrived with the head', () => {

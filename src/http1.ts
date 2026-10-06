@@ -15,6 +15,14 @@ export interface ParsedHead {
   statusText: string;
   /** Header names lowercased; repeated headers are joined with ", ". */
   headers: Record<string, string>;
+  /**
+   * `Set-Cookie` values, one per header line, in arrival order.
+   *
+   * Kept apart from `headers` on purpose: joining them cannot work, because a
+   * cookie's `Expires` attribute contains a comma, so parsing a joined value
+   * invents attributes that were never sent.
+   */
+  setCookie: string[];
   /** Bytes already read past the header terminator. */
   rest: Buffer;
 }
@@ -30,11 +38,16 @@ export function parseHead(buf: Buffer): ParsedHead | null {
   if (!match) throw new Error(`malformed HTTP status line: ${JSON.stringify(statusLine)}`);
 
   const headers: Record<string, string> = {};
+  const setCookie: string[] = [];
   for (const line of lines) {
     const colon = line.indexOf(':');
     if (colon < 0) continue;
     const name = line.slice(0, colon).trim().toLowerCase();
     const value = line.slice(colon + 1).trim();
+    if (name === 'set-cookie') {
+      setCookie.push(value);
+      continue;
+    }
     headers[name] = headers[name] ? `${headers[name]}, ${value}` : value;
   }
 
@@ -42,6 +55,7 @@ export function parseHead(buf: Buffer): ParsedHead | null {
     status: Number(match[1]),
     statusText: match[2] ?? '',
     headers,
+    setCookie,
     rest: Buffer.from(buf.subarray(end + 4)),
   };
 }

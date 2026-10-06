@@ -22,9 +22,32 @@ import {
   type Values,
 } from './args.js';
 import { Client, MAIN_SITE, VERSION, type ClientOptions } from './client.js';
+import type { CookieJar } from './cookie.js';
 import { human, orDash, shortDate, table } from './format.js';
+import type { ScriptTypeName } from './form.js';
+import { looksLikeSignIn } from './htmlform.js';
 import { baseName, isNewer, metaFirst, metaUrlFrom, parseScriptId, parseUserscriptMeta, safeFilename } from './meta.js';
+import {
+  PublishError,
+  describeSource,
+  inferScriptId,
+  inspectSource,
+  isFile as isRegularFile,
+  publish,
+  scriptTypeFromEnv,
+} from './publish.js';
+import {
+  clearSession,
+  configDir,
+  currentUser,
+  describeError,
+  loadSession,
+  login,
+  saveSession,
+  sessionPath,
+} from './session.js';
 import { SORT_NAMES, type Script, type SortName } from './types.js';
+import { confirm, isInteractive, prompt, promptHidden } from './tty.js';
 
 const out = (s = '') => process.stdout.write(`${s}\n`);
 const err = (s: string) => process.stderr.write(`${s}\n`);
@@ -42,17 +65,41 @@ export interface Command {
 // shared helpers
 // --------------------------------------------------------------------------- //
 
-function buildClient(values: Values): Client {
-  const options: ClientOptions = {
+/**
+ * The jar of the command currently running, so `main` can persist whatever the
+ * session picked up (Rails rotates the session cookie on sign-in and on writes).
+ */
+let activeJar: CookieJar | undefined;
+let sessionTouched = false;
+
+function buildClient(values: Values, options: { session?: boolean } = {}): Client {
+  const clientOptions: ClientOptions = {
     timeoutMs: numberValue(values, 'timeout', 30) * 1000,
   };
   const proxy = stringValue(values, 'proxy');
-  if (proxy) options.proxy = proxy;
-  if (booleanValue(values, 'no-proxy')) options.noProxy = true;
+  if (proxy) clientOptions.proxy = proxy;
+  if (booleanValue(values, 'no-proxy')) clientOptions.noProxy = true;
   const locale = values.locale;
-  if (typeof locale === 'string') options.locale = locale;
-  if (booleanValue(values, 'verbose')) options.onRequest = (line) => err(line);
-  return new Client(options);
+  if (typeof locale === 'string') clientOptions.locale = locale;
+  if (booleanValue(values, 'verbose')) clientOptions.onRequest = (line) => err(line);
+  if (options.session) {
+    const jar = loadSession();
+    if (jar) {
+      clientOptions.jar = jar;
+      activeJar = jar;
+      sessionTouched = true;
+    }
+  }
+  return new Client(clientOptions);
+}
+
+/** Requires a stored session, with one clear message instead of a broken publish. */
+function requireSession(values: Values): Client {
+  const client = buildClient(values, { session: true });
+  if (!activeJar) {
+    throw new Error(`not signed in — run \`gf login\` first (session file: ${sessionPath()})`);
+  }
+  return client;
 }
 
 /** Parse a command's args, handling `--help` uniformly. */
@@ -363,6 +410,175 @@ async function cmdCheck(argv: string[]): Promise<void> {
 }
 
 // --------------------------------------------------------------------------- //
+// session + write commands
+// --------------------------------------------------------------------------- //
+
+/**
+ * The password, from the environment or a hidden prompt.
+ *
+ * Never from argv: Windows exposes the full command line to any process, and
+ * every shell writes it to history.
+ */
+async function readPassword(email: string): Promise<string> {
+  const fromEnv = process.env.GF_PASSWORD;
+  if (fromEnv) return fromEnv;
+  if (!isInteractive()) {
+    throw new Error(
+      'no password available: set GF_PASSWORD, or run `gf login` from a terminal so it can prompt',
+    );
+  }
+  return promptHidden(`Password for ${email}: `);
+}
+
+async function readEmail(explicit: string): Promise<string> {
+  const fromEnv = process.env.GF_EMAIL;
+  if (explicit) return explicit;
+  if (fromEnv) return fromEnv;
+  if (!isInteractive()) {
+    throw new Error('no e-mail available: pass --email or set GF_EMAIL');
+  }
+  const answer = await prompt('Greasy Fork e-mail: ');
+  if (!answer) throw new Error('no e-mail given');
+  return answer;
+}
+
+async function cmdLogin(argv: string[]): Promise<void> {
+  const { values } = parse(loginCommand, argv);
+  const client = buildClient(values, { session: true });
+
+  const email = await readEmail(stringValue(values, 'email'));
+  const password = await readPassword(email);
+  const otp = stringValue(values, 'otp') || undefined;
+
+  const result = await login(client, email, password, otp);
+  const jar = activeJar ?? client.jar;
+  if (!jar) throw new Error('the site accepted the login but set no session cookie');
+  saveSession(jar, result.username);
+
+  out(`signed in as ${result.username || email}`);
+  out(`session : ${sessionPath()}`);
+  out(`cookies : ${jar.size}`);
+  if (!result.usedOtp) {
+    out('note    : two-factor login was not needed for this account');
+  }
+}
+
+async function cmdLogout(argv: string[]): Promise<void> {
+  const { values } = parse(logoutCommand, argv);
+  await serverLogout(values);
+  const removed = clearSession();
+  out(removed ? `signed out (removed ${sessionPath()})` : 'no stored session to remove');
+}
+
+/**
+ * Best-effort server-side sign-out.
+ *
+ * The site exposes `GET /<locale>/users/sign_out` specifically so a plain link (or
+ * a client like this) can log out without a CSRF token — Devise's own
+ * `DELETE /users/sign_out` needs one. Removing the local cookie is what actually
+ * signs this CLI out, so a network failure here is reported, never fatal.
+ */
+async function serverLogout(values: Values): Promise<void> {
+  const client = buildClient(values, { session: true });
+  if (!client.jar) return;
+  const url = `${client.mainSite}/${client.locale}/users/sign_out`;
+  try {
+    const res = await client.fetchHtml(url);
+    if (!looksLikeSignIn(res.body)) return;
+  } catch {
+    // Offline or the route moved — the local file removal is the real logout.
+    return;
+  }
+  activeJar = undefined;
+  sessionTouched = false;
+}
+
+async function cmdWhoami(argv: string[]): Promise<void> {
+  const { values } = parse(whoamiCommand, argv);
+  const client = buildClient(values, { session: true });
+  const json = booleanValue(values, 'json');
+
+  if (!activeJar) {
+    if (json) printJson({ signedIn: false, sessionFile: sessionPath() });
+    else out('not signed in');
+    return;
+  }
+  const name = await currentUser(client);
+  if (json) {
+    printJson({ signedIn: name !== null, username: name || null, sessionFile: sessionPath() });
+    return;
+  }
+  if (name === null) {
+    out('not signed in (the stored session was rejected — run `gf login` again)');
+    return;
+  }
+  out(name ? `signed in as ${name}` : 'signed in');
+}
+
+async function cmdPublish(argv: string[]): Promise<void> {
+  const { values, positionals } = parse(publishCommand, argv);
+  const target = requirePositional(positionals, 'publish <file.user.js> [--id N]');
+  if (!isRegularFile(target)) throw new Error(`not a file: ${target}`);
+
+  const { info } = inspectSource(target);
+  const client = requireSession(values);
+
+  const explicitId = stringValue(values, 'id');
+  const scriptType = (stringValue(values, 'type') || scriptTypeFromEnv()) as
+    | ScriptTypeName
+    | '';
+  if (scriptType && !['public', 'unlisted', 'library'].includes(scriptType)) {
+    throw new Error(`unknown --type ${JSON.stringify(scriptType)} (public, unlisted, library)`);
+  }
+
+  const inferred = scriptType ? undefined : inferScriptId(info);
+  const id = explicitId ? scriptId(explicitId) : inferred;
+  const json = booleanValue(values, 'json');
+  const dryRun = booleanValue(values, 'dry-run');
+  const force = booleanValue(values, 'force');
+
+  if (!id && !force && !dryRun) {
+    const proceed = await confirm(
+      `${info.name} ${info.version} is not on Greasy Fork yet — create it as a new script?`,
+    );
+    if (!proceed) throw new Error('cancelled');
+  }
+
+  const step = (line: string) => {
+    if (!json) err(`  ${line}`);
+  };
+  if (!json) {
+    out(`${id ? 'updating' : 'creating'} ${describeSource(info, target)}`);
+    if (id) out(`target  : ${client.mainSite}/${client.locale}/scripts/${id}`);
+  }
+
+  const result = await publish(client, target, {
+    ...(id ? { scriptId: id } : {}),
+    ...(scriptType ? { scriptType: scriptType as ScriptTypeName } : {}),
+    ...(stringValue(values, 'changelog') ? { changelog: stringValue(values, 'changelog') } : {}),
+    ...(stringValue(values, 'info') ? { additionalInfo: stringValue(values, 'info') } : {}),
+    force,
+    dryRun,
+    onStep: step,
+  });
+
+  if (json) {
+    printJson(result);
+    return;
+  }
+  if (result.dryRun) {
+    out('dry run: the form was fetched and the payload built; nothing was submitted');
+    return;
+  }
+  out(`${result.created ? 'published' : 'updated'} ${result.name} ${result.version}`);
+  out(`url     : ${result.url}`);
+  if (result.overrides.length > 0) {
+    out(`warnings: confirmed ${result.overrides.length} (${result.overrides.join(', ')})`);
+  }
+  out('note    : the site may hold a new script for review before it is listed');
+}
+
+// --------------------------------------------------------------------------- //
 // command table + entry point
 // --------------------------------------------------------------------------- //
 
@@ -460,6 +676,55 @@ const checkCommand: Command = {
   run: cmdCheck,
 };
 
+const loginCommand: Command = {
+  name: 'login',
+  aliases: [],
+  usage: 'login [--email ME] [--otp CODE]',
+  brief: 'sign in and store the session cookie',
+  options: {
+    email: { type: 'string' },
+    otp: { type: 'string' },
+  },
+  run: cmdLogin,
+};
+
+const logoutCommand: Command = {
+  name: 'logout',
+  aliases: [],
+  usage: 'logout',
+  brief: 'forget the stored session',
+  options: {},
+  run: cmdLogout,
+};
+
+const whoamiCommand: Command = {
+  name: 'whoami',
+  aliases: [],
+  usage: 'whoami [--json]',
+  brief: 'show the signed-in account',
+  options: { ...jsonOption },
+  run: cmdWhoami,
+};
+
+const publishCommand: Command = {
+  name: 'publish',
+  aliases: ['push'],
+  usage:
+    'publish <file.user.js> [--id N] [--type public|unlisted|library] [--changelog T] [--info T]\n' +
+    '                    [--force] [--dry-run] [--json]',
+  brief: 'publish or update a script (needs login)',
+  options: {
+    id: { type: 'string' },
+    type: { type: 'string' },
+    changelog: { type: 'string' },
+    info: { type: 'string' },
+    force: { type: 'boolean' },
+    'dry-run': { type: 'boolean' },
+    ...jsonOption,
+  },
+  run: cmdPublish,
+};
+
 export const COMMANDS: Command[] = [
   searchCommand,
   infoCommand,
@@ -470,10 +735,14 @@ export const COMMANDS: Command[] = [
   sitesCommand,
   openCommand,
   checkCommand,
+  loginCommand,
+  logoutCommand,
+  whoamiCommand,
+  publishCommand,
 ];
 
 function usage(): void {
-  out('gf — search, inspect and download Greasy Fork userscripts');
+  out('gf — search, inspect, download and publish Greasy Fork userscripts');
   out('');
   out('Usage:');
   out('  gf [global flags] <command> [flags] [args]');
@@ -491,7 +760,10 @@ function usage(): void {
   out('  -h, --help      show help');
   out('      --version   print version');
   out('');
-  out('Endpoints: api.greasyfork.org (JSON) · update.greasyfork.org (raw code)');
+  out('Reads: api.greasyfork.org (JSON) · update.greasyfork.org (raw code)');
+  out('Login/publish: the site\'s own HTML forms — unofficial, needs a session cookie');
+  out('  password is read from GF_PASSWORD or a hidden prompt, never from argv');
+  out(`  session file: ${sessionPath()}`);
 }
 
 function findCommand(name: string | undefined): Command | undefined {
@@ -538,9 +810,18 @@ async function main(argv: string[]): Promise<void> {
     throw new Error(`unknown command ${JSON.stringify(first)}`);
   }
   await command.run(argv);
+
+  // A command that carried a session may have rotated the cookie (Rails issues a
+  // new one on sign-in and on writes), so persist whatever the jar now holds.
+  if (sessionTouched && activeJar) saveSession(activeJar);
 }
 
 main(process.argv.slice(2)).catch((e: unknown) => {
-  err(`error: ${e instanceof Error ? e.message : String(e)}`);
+  if (e instanceof PublishError && e.problems.length > 0) {
+    err(`error: ${e.message}`);
+    for (const problem of e.problems) err(`  - ${problem}`);
+    process.exit(1);
+  }
+  err(`error: ${describeError(e)}`);
   process.exit(1);
 });

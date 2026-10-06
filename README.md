@@ -17,10 +17,14 @@ dependencies · ships a typed library *and* the `gf` command.
 [![publish workflow](https://github.com/Weidows/greasyfork-cli/actions/workflows/publish-npm.yml/badge.svg)](https://github.com/Weidows/greasyfork-cli/actions/workflows/publish-npm.yml)
 
 > **Unofficial.** A community client, not affiliated with or endorsed by Greasy Fork or its
-> maintainers. It only reads the site's public JSON endpoints.
+> maintainers. It reads the site's public JSON API, and — for `login` / `publish` — drives the
+> site's own HTML forms. Those are not part of any documented API, so they can change without
+> notice; treat `publish` as a convenience, not a stable contract.
 >
-> **Not supported:** publishing, rating, commenting or favouriting — those need a logged-in
-> session plus CSRF, and are deliberately out of scope.
+> **Not supported:** rating, commenting or favouriting — deliberately out of scope.
+>
+> `publish` is a real, public write to your account. It is never automatic: `--dry-run` prints
+> what would be sent, and an unlisted script plus a throwaway account is the sane way to try it.
 
 ## Install
 
@@ -87,6 +91,12 @@ gf user 584991-windrunnermax      # everything by one author
 gf sites -n 20                    # scripts per site
 gf open 405130 --launch           # open the script page
 gf check ./scripts                # check local scripts for updates
+
+gf login                          # sign in (password from a hidden prompt, or GF_PASSWORD)
+gf whoami                         # is the stored session still valid?
+gf publish my.user.js             # publish or update a script
+gf publish my.user.js --dry-run   # build the payload and stop, submitting nothing
+gf logout                         # forget the session
 ```
 
 `<script>` accepts `405130`, `405130-slug`, or a full URL.
@@ -102,6 +112,42 @@ gf check ./scripts                # check local scripts for updates
 | `sites` | | Script count per targeted site |
 | `open <script>` | | Print the page URL (`--launch` opens it) |
 | `check <path...>` | | Compare local scripts against their `@updateURL` |
+| `login` | | Sign in and store the session cookie |
+| `logout` | | Forget the stored session |
+| `whoami` | | Show the signed-in account |
+| `publish <file>` | `push` | Publish a new script, or update an existing one |
+
+### Publishing
+
+```bash
+gf login                                  # once; the cookie lasts months
+gf publish my.user.js                     # new script, or update when @downloadURL names one
+gf publish my.user.js --id 405130         # force the target script id
+gf publish my.user.js --dry-run           # fetch the form and build the payload, POST nothing
+gf publish my.user.js --type unlisted     # public (default) | unlisted | library
+gf publish my.user.js --changelog "fix x" # update note, shown on the script's page
+gf publish my.user.js --force             # confirm the site's warnings and resubmit
+```
+
+`gf publish` reads `@name`, `@version`, `@match`/`@include` from the file and refuses locally when
+the site would refuse anyway — no `@version` bump, no `@match`, a meta block that is missing
+entirely. It then:
+
+1. fetches the publish form (create or update) and takes the **fresh** CSRF token from it,
+2. POSTs the code to `/<locale>/script_versions` (new) or `/<locale>/scripts/<id>/versions`,
+3. decides success from the **redirect target** — `/scripts/<id>-<slug>` means published, while a
+   200 that re-renders the form is a rejection, and the server's own error text is printed.
+
+Warnings ("version not incremented", "no namespace", …) are **reported, not swallowed**. They are
+the author's own confirmations to make; `--force` ticks them, and nothing else does.
+
+To try it safely: use a throwaway account and an `unlisted` script. This writes to a real account.
+
+The password is never an argument (it would land in shell history and, on Windows, in the process
+list). It comes from `GF_PASSWORD` or a hidden interactive prompt — PowerShell `Read-Host
+-AsSecureString` on Windows, `stty -echo` elsewhere. Only the resulting cookie is stored, at
+`%APPDATA%\gf\session.json` on Windows or `~/.config/gf/session.json` elsewhere (`GF_SESSION` and
+`GF_CONFIG_DIR` override both).
 
 Global flags, accepted before or after the subcommand:
 
@@ -111,7 +157,7 @@ Global flags, accepted before or after the subcommand:
 --timeout SECS  per-request timeout (default 30)
 --locale CODE   site locale, e.g. en or zh-CN (default en)
 -v, --verbose   log every request
---json          machine-readable output (search / info / versions / user / sites)
+--json          machine-readable output (search / info / versions / user / sites / whoami / publish)
 ```
 
 ### As a library
@@ -163,8 +209,11 @@ The binaries exist for machines without Node.
   `scripts.json` (100 per page) over per-script calls.
 - **`gf` is a popular name.** GoFrame's CLI is also `gf`; if both are installed, one shadows the
   other on `PATH`.
-- **Publishing** has no API — only a prefill URL that fills the form for a human to submit:
-  `POST greasyfork.org/<locale>/script_versions/prefill` (needs a session cookie).
+- **Publishing has no API.** `gf publish` drives the site's own HTML form instead — that is the
+  only way, and it is why the form's field names and the CSRF token are read from the live page on
+  every run rather than hard-coded from a spec. A `POST /<locale>/script_versions/prefill` URL also
+  exists and needs only the session cookie, but it renders the same form **for a human to submit**,
+  so it is not a publish path and `gf` does not use it.
 
 ## Troubleshooting
 

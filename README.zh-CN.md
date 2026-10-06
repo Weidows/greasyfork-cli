@@ -14,9 +14,11 @@
 [![release workflow](https://github.com/Weidows/greasyfork-cli/actions/workflows/release.yml/badge.svg)](https://github.com/Weidows/greasyfork-cli/actions/workflows/release.yml)
 [![publish workflow](https://github.com/Weidows/greasyfork-cli/actions/workflows/publish-npm.yml/badge.svg)](https://github.com/Weidows/greasyfork-cli/actions/workflows/publish-npm.yml)
 
-> **非官方项目。** 社区客户端，与 Greasy Fork 官方及其维护者无关，也未获其背书。它只读取站点公开的 JSON 接口。
+> **非官方项目。** 社区客户端，与 Greasy Fork 官方及其维护者无关，也未获其背书。它读取站点公开的 JSON 接口；而 `login` / `publish` 是驱动站点自身的 HTML 表单 —— 那不属于任何成文 API，随时可能改版失效，把它当便利工具而非稳定契约。
 >
-> **不支持：** 发布 / 评分 / 评论 / 收藏 —— 那些需要登录 session + CSRF，刻意不做。
+> **不支持：** 评分 / 评论 / 收藏 —— 刻意不做。
+>
+> `publish` 是**对你账号的真实公开写入**，且从不自动执行：`--dry-run` 会先打印将要提交的内容；想试手请用一次性小号 + unlisted（不公开）脚本。
 
 ## 安装
 
@@ -77,6 +79,12 @@ gf user 584991-windrunnermax      # 某作者的全部脚本
 gf sites -n 20                    # 各站点脚本数量排行
 gf open 405130 --launch           # 打开脚本页
 gf check ./scripts                # 检查本地脚本是否过时
+
+gf login                          # 登录（密码走隐藏输入或 GF_PASSWORD）
+gf whoami                         # 当前存的会话还有效吗？
+gf publish my.user.js             # 发布或更新脚本
+gf publish my.user.js --dry-run   # 只抓表单、拼载荷，不提交任何东西
+gf logout                         # 清除会话
 ```
 
 `<script>` 参数接受 `405130`、`405130-slug` 或完整 URL 三种写法。
@@ -92,6 +100,34 @@ gf check ./scripts                # 检查本地脚本是否过时
 | `sites` | | 各站点脚本数量 |
 | `open <脚本>` | | 打印脚本页 URL（`--launch` 直接打开） |
 | `check <路径...>` | | 用 `@updateURL` 比对本地脚本是否过时 |
+| `login` | | 登录并保存会话 cookie |
+| `logout` | | 清除已保存的会话 |
+| `whoami` | | 显示当前登录账号 |
+| `publish <文件>` | `push` | 发布新脚本，或更新已有脚本 |
+
+### 发布
+
+```bash
+gf login                                  # 只需一次；cookie 能撑几个月
+gf publish my.user.js                     # 新脚本；若 @downloadURL 指向已有脚本则更新它
+gf publish my.user.js --id 405130         # 强制指定目标脚本 id
+gf publish my.user.js --dry-run           # 抓表单 + 拼载荷，不发 POST
+gf publish my.user.js --type unlisted     # public（默认）| unlisted | library
+gf publish my.user.js --changelog "修复x" # 更新说明，会显示在脚本页
+gf publish my.user.js --force             # 确认站点的警告并重提
+```
+
+`gf publish` 会先读文件里的 `@name`、`@version`、`@match`/`@include`，凡是站点同样会拒的就**在本地先拦下** —— 没升 `@version`、没有 `@match`、完全没有 meta 块。然后：
+
+1. 抓发布表单（新建或更新），从**页面里取当次有效的 CSRF token**（不缓存、不硬编码）；
+2. POST 代码到 `/<locale>/script_versions`（新建）或 `/<locale>/scripts/<id>/versions`（更新）；
+3. 用**重定向目标**判定成败 —— 跳到 `/scripts/<id>-<slug>` 才算发布成功；返回 200 且重渲染表单就是被拒，并把服务端自己的报错原文打出来。
+
+站点的警告（"version not incremented"、"no namespace" 等）**只报告、不吞掉** —— 那是作者本人该做的确认；只有 `--force` 会勾选它们，别的地方都不会。
+
+想安全试手：用一次性小号 + `unlisted` 脚本。这是对真实账号的真实写入。
+
+密码**不作为命令行参数**（会进 shell history，且在 Windows 上还会出现在进程列表里）。它来自 `GF_PASSWORD` 环境变量，或隐藏输入的交互式提示 —— Windows 上用 PowerShell `Read-Host -AsSecureString`，其他平台用 `stty -echo`。**只落盘 cookie**，Windows 在 `%APPDATA%\gf\session.json`，其他平台在 `~/.config/gf/session.json`（`GF_SESSION` 与 `GF_CONFIG_DIR` 可覆盖）。
 
 全局参数，放子命令**前后都行**：
 
@@ -101,7 +137,7 @@ gf check ./scripts                # 检查本地脚本是否过时
 --timeout SECS  单次请求超时（默认 30）
 --locale CODE   站点语言，例如 en 或 zh-CN（默认 en）
 -v, --verbose   打印每个请求
---json          机器可读输出（search / info / versions / user / sites）
+--json          机器可读输出（search / info / versions / user / sites / whoami / publish）
 ```
 
 ### 作为库使用
@@ -142,7 +178,7 @@ UPX 看着像答案 —— 能把 98 MB 压到 33 MB（`--lzma` 27 MB）—— �
 - **接口无承诺：** 下面这些端点是非文档化的，随时可能变。它们集中在 `src/client.ts`。
 - **限速：** `robots.txt` 要求 `Crawl-delay: 1`。批量调用请自行加延迟；能用 `scripts.json`（每页 100）就不要逐条查。
 - **`gf` 是个热门名字。** GoFrame 的 CLI 也叫 `gf`，两者同时装会有一个在 `PATH` 里遮蔽另一个。
-- **发布脚本**没有 API —— 只有 prefill URL 能填充表单供人工提交：`POST greasyfork.org/<locale>/script_versions/prefill`（需要 session cookie）。
+- **发布没有 API。** `gf publish` 走的是站点自身的 HTML 表单 —— 这是唯一可行的路，也正是为什么表单字段名和 CSRF token 每次都从**实时页面**读取，而不是照某份规格硬编码。另有 `POST /<locale>/script_versions/prefill` 端点、只需 session cookie，但它渲染出来的是**同一张表单、供人工提交**，并不是发布通路，`gf` 没有用它。
 
 ## 排错
 

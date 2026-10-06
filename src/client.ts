@@ -18,7 +18,15 @@
  * returns the default chart. Search must go through the `api.` subdomain.
  */
 
-import { get, getJson, NetworkError } from './http.js';
+import {
+  get,
+  getJson,
+  NetworkError,
+  request as sendRequest,
+  type HttpResponse,
+} from './http.js';
+import { encodeForm, type FormFields } from './form.js';
+import type { CookieJar } from './cookie.js';
 import { resolveProxy } from './proxy.js';
 import {
   SORT_KEYS,
@@ -67,6 +75,11 @@ export interface ClientOptions {
   /** Override the API host (mainly for tests). */
   apiHost?: string;
   mainSite?: string;
+  /**
+   * Session cookies. Passed in rather than read from disk here, so the library
+   * stays free of filesystem assumptions — the CLI loads and saves the jar.
+   */
+  jar?: CookieJar;
 }
 
 export class Client {
@@ -79,6 +92,8 @@ export class Client {
   private readonly noProxy: boolean;
   private readonly onRequest: ((line: string) => void) | undefined;
   private proxyResolved = false;
+  /** Session cookies, when the caller supplied a jar. */
+  readonly jar: CookieJar | undefined;
 
   constructor(options: ClientOptions = {}) {
     this.apiHost = options.apiHost ?? API_HOST;
@@ -87,6 +102,7 @@ export class Client {
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.noProxy = options.noProxy ?? false;
     this.onRequest = options.onRequest;
+    this.jar = options.jar;
     if (options.proxy) this.proxy = options.proxy;
   }
 
@@ -232,6 +248,68 @@ export class Client {
   /** Fetch an arbitrary resource (script source, meta block) by URL. */
   async raw(url: string): Promise<string> {
     return this.request(url, 'text/javascript');
+  }
+
+  /** The "no proxy detected" hint, shared by every request path. */
+  private hintFor(proxy: string | undefined): string | undefined {
+    if (proxy) return undefined;
+    return (
+      '\n  hint: no proxy detected — if greasyfork.org is unreachable from your network,' +
+      ' pass --proxy http://127.0.0.1:7890'
+    );
+  }
+
+  /**
+   * GET an HTML page.
+   *
+   * A 4xx is returned rather than thrown, unlike the JSON paths: a protected page
+   * answers **200 after a redirect to the sign-in form**, and the only way to tell
+   * "signed out" from "here is your page" is to read the body.
+   */
+  async fetchHtml(url: string): Promise<HttpResponse> {
+    const proxy = await this.proxyFor();
+    this.onRequest?.(`GET ${url}`);
+    return sendRequest(url, {
+      proxy,
+      timeoutMs: this.timeoutMs,
+      accept: 'text/html,application/xhtml+xml',
+      userAgent: USER_AGENT,
+      jar: this.jar,
+      proxyHint: this.hintFor(proxy),
+    });
+  }
+
+  /**
+   * POST a urlencoded form, as the site's own pages do.
+   *
+   * `Referer` and `Origin` are sent because Rails' CSRF check and the site's own
+   * `check_ip` both inspect where a request claims to come from; a form POST with
+   * neither looks nothing like the traffic the site expects.
+   */
+  async submitForm(
+    url: string,
+    fields: FormFields,
+    options: { referer?: string } = {},
+  ): Promise<HttpResponse> {
+    const proxy = await this.proxyFor();
+    const body = encodeForm(fields);
+    this.onRequest?.(`POST ${url} (${fields.length} fields)`);
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Origin: new URL(url).origin,
+    };
+    if (options.referer) headers.Referer = options.referer;
+    return sendRequest(url, {
+      proxy,
+      timeoutMs: this.timeoutMs,
+      accept: 'text/html,application/xhtml+xml',
+      userAgent: USER_AGENT,
+      jar: this.jar,
+      proxyHint: this.hintFor(proxy),
+      method: 'POST',
+      headers,
+      body,
+    });
   }
 }
 
