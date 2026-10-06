@@ -1,5 +1,7 @@
 # gf — Greasy Fork CLI
 
+[English](README.md) | **简体中文**
+
 <img src="https://raw.githubusercontent.com/Weidows/greasyfork-cli/main/assets/header.webp" alt="gf —— Greasy Fork 的叉子徽章与脚本列表，取站点枣红与深绿配色" width="100%">
 
 **在终端里搜索、查看、下载 [Greasy Fork](https://greasyfork.org) 用户脚本。**<br>
@@ -214,7 +216,3 @@ workflow 发布前会先升级 npm（Node 22 自带 npm 10.x，而 trusted publi
 **最大的坑：** `greasyfork.org/<locale>/scripts.json` 会**忽略** `q` / `page` / `sort`，永远返回默认榜单。搜索必须走 `api.` 子域。
 
 带版本号的代码 URL 会带查询串（`.../style.user.js?version=1284070`），所以文件名与 `.meta.js` 推导都要先剥掉查询串。
-
-## 许可
-
-MIT

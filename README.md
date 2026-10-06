@@ -1,5 +1,7 @@
 # gf — Greasy Fork CLI
 
+**English** | [简体中文](README.zh-CN.md)
+
 <img src="https://raw.githubusercontent.com/Weidows/greasyfork-cli/main/assets/header.webp" alt="gf — Greasy Fork's fork badge beside a script list, in the site's maroon and green palette" width="100%">
 
 **Search, inspect and download [Greasy Fork](https://greasyfork.org) userscripts from the
@@ -247,7 +249,3 @@ always returns the default chart. Search must go through the `api.` subdomain.
 
 Versioned code URLs carry a query string (`.../style.user.js?version=1284070`), so filenames and
 `.meta.js` derivation strip it first.
-
-## Licence
-
-MIT
