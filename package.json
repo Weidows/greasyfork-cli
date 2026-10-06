@@ -1,6 +1,6 @@
 {
   "name": "@greasyfork/cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Search, inspect and download Greasy Fork userscripts from the terminal. Zero runtime dependencies.",
   "keywords": [
     "greasyfork",
@@ -40,6 +40,7 @@
   },
   "files": [
     "dist",
+    "assets/header.webp",
     "README.md",
     "LICENSE"
   ],

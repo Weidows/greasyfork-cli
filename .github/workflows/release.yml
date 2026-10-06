@@ -130,10 +130,30 @@ jobs:
           path: out
           merge-multiple: true
 
-      - name: Checksums
+      # Archives are made here, once, on one runner, rather than per-platform in
+      # the matrix: tar/zip behave the same everywhere but the shell does not, and
+      # this keeps one toolchain responsible for the checksums.
+      #
+      # Why archives at all: each binary is ~63-98 MB because it embeds the whole
+      # Bun runtime. gzip brings that down by ~2.6x, and that is the only honest
+      # saving available (UPX breaks the Bun payload; minify saves 18 KB).
+      - name: Package archives
         run: |
+          set -euo pipefail
           cd out
+          mkdir -p archives
+          for f in gf-linux-x64 gf-linux-arm64 gf-darwin-x64 gf-darwin-arm64; do
+            tar -czf "archives/$f.tar.gz" "$f"
+          done
+          if command -v zip >/dev/null 2>&1; then
+            zip -q -9 archives/gf-windows-x64.zip gf-windows-x64.exe
+          else
+            python3 -c "import zipfile;zipfile.ZipFile('archives/gf-windows-x64.zip','w',zipfile.ZIP_DEFLATED).write('gf-windows-x64.exe')"
+          fi
+          rm -f gf-linux-* gf-darwin-* gf-windows-*
+          cd archives
           sha256sum * > SHA256SUMS.txt
+          ls -l
           cat SHA256SUMS.txt
 
       - uses: softprops/action-gh-release@v2
@@ -142,4 +162,4 @@ jobs:
           name: ${{ needs.meta.outputs.tag }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: out/*
+          files: out/archives/*

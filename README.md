@@ -1,59 +1,74 @@
-# @greasyfork/cli
+# gf — Greasy Fork CLI
 
-**English** | [简体中文](README.zh-CN.md)
+<img src="https://raw.githubusercontent.com/Weidows/greasyfork-cli/main/assets/header.webp" alt="gf — a fork and a terminal window in Greasy Fork's maroon palette" width="100%">
 
-Search, inspect and download [Greasy Fork](https://greasyfork.org) userscripts from the
-terminal. Zero runtime dependencies.
+**Search, inspect and download [Greasy Fork](https://greasyfork.org) userscripts from the
+terminal.**<br>
+Published as [`@greasyfork/cli`](https://www.npmjs.com/package/@greasyfork/cli) · zero runtime
+dependencies · ships a typed library *and* the `gf` command.
 
-> **Unofficial.** This is a community client, not affiliated with or endorsed by Greasy Fork
-> or its maintainers. It only reads the site's public JSON endpoints.
+[![npm](https://img.shields.io/npm/v/%40greasyfork%2Fcli?style=flat-square&label=npm)](https://www.npmjs.com/package/@greasyfork/cli)
+[![release](https://img.shields.io/github/v/release/Weidows/greasyfork-cli?sort=semver&style=flat-square)](https://github.com/Weidows/greasyfork-cli/releases/latest)
+[![license](https://img.shields.io/github/license/Weidows/greasyfork-cli?style=flat-square)](LICENSE)
+[![node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen?style=flat-square)](package.json)
+[![release workflow](https://github.com/Weidows/greasyfork-cli/actions/workflows/release.yml/badge.svg)](https://github.com/Weidows/greasyfork-cli/actions/workflows/release.yml)
+[![publish workflow](https://github.com/Weidows/greasyfork-cli/actions/workflows/publish-npm.yml/badge.svg)](https://github.com/Weidows/greasyfork-cli/actions/workflows/publish-npm.yml)
 
-One source tree ships two things:
-
-- **`@greasyfork/cli`** — the importable library (typed, ESM)
-- **`gf`** — the command line tool
-
-> **Scope.** Greasy Fork has a real read-only JSON API, it just is not documented: the help
-> page only says to look for `<link rel="alternate" type="application/json">` on any page.
-> Every endpoint below was verified against the live site.
+> **Unofficial.** A community client, not affiliated with or endorsed by Greasy Fork or its
+> maintainers. It only reads the site's public JSON endpoints.
+>
 > **Not supported:** publishing, rating, commenting or favouriting — those need a logged-in
 > session plus CSRF, and are deliberately out of scope.
 
 ## Install
 
-### npm
-
 ```bash
-npm i -g @greasyfork/cli     # or: npx @greasyfork/cli search bilibili
+npm i -g @greasyfork/cli        # or without installing: npx @greasyfork/cli search bilibili
 ```
 
-Requires Node 18+. **No runtime dependencies** — `npm ls @greasyfork/cli` shows only itself.
+Node 18+. Nothing else — `npm ls @greasyfork/cli` shows only itself. **This is the
+recommended install**: the package is ~50 KB, since Node is already on your machine.
 
-### Prebuilt binary (no Node required)
-
-Download the file for your platform from
-[Releases](https://github.com/Weidows/greasyfork-cli/releases):
+No Node around? Grab a prebuilt binary from
+[Releases](https://github.com/Weidows/greasyfork-cli/releases) instead — but read
+[why they are 60–95 MB](#why-is-the-binary-6095-mb) first:
 
 | Platform | Asset |
 |---|---|
-| Linux x64 | `gf-linux-x64` |
-| Linux arm64 | `gf-linux-arm64` |
-| macOS Intel | `gf-darwin-x64` |
-| macOS Apple Silicon | `gf-darwin-arm64` |
-| Windows x64 | `gf-windows-x64.exe` |
+| Linux x64 | `gf-linux-x64.tar.gz` |
+| Linux arm64 | `gf-linux-arm64.tar.gz` |
+| macOS Intel | `gf-darwin-x64.tar.gz` |
+| macOS Apple Silicon | `gf-darwin-arm64.tar.gz` |
+| Windows x64 | `gf-windows-x64.zip` |
 
 ```bash
-chmod +x gf-linux-x64 && ./gf-linux-x64 search bilibili
+tar -xzf gf-linux-x64.tar.gz && ./gf search bilibili
 ```
 
-On macOS, a binary **downloaded through a browser** carries the quarantine flag and will be
-blocked; clear it first:
+`SHA256SUMS.txt` is published next to them. On macOS, clear the quarantine flag a browser
+download adds — the binaries are ad-hoc signed, but that attribute still has to go:
 
 ```bash
 xattr -d com.apple.quarantine gf-darwin-arm64
 ```
 
-The binaries are ad-hoc signed, but the quarantine attribute still has to go.
+## Behind a proxy? Read this first
+
+Greasy Fork is unreachable from mainland China without a proxy, and **`HTTP_PROXY` /
+`HTTPS_PROXY` are ignored** by both `node:https` and `fetch`. So `gf` does not depend on them:
+
+1. `GREASYFORK_CLI_PROXY`, `GF_PROXY`, `https_proxy`, `HTTPS_PROXY`, `http_proxy`, `HTTP_PROXY`
+2. `git config --global https.proxy` — many machines only configure git
+
+If a proxy is found it is used automatically; there is nothing to configure. To be explicit:
+
+```bash
+gf --proxy http://127.0.0.1:7890 search bilibili
+gf --no-proxy search bilibili          # force a direct connection
+```
+
+Only `http://` and `https://` proxies are supported; `socks5://` is rejected loudly rather than
+failing silently.
 
 ## Usage
 
@@ -74,7 +89,19 @@ gf check ./scripts                # check local scripts for updates
 
 `<script>` accepts `405130`, `405130-slug`, or a full URL.
 
-### Global flags (before or after the subcommand)
+| Command | Aliases | What it does |
+|---|---|---|
+| `search [query]` | `s` | Search; no query returns the top chart |
+| `info <script>` | `show` | Author, version, licence, installs, ratings, URLs |
+| `download <script>` | `dl` | Save the `.user.js` (`--with-meta` adds `.meta.js`) |
+| `cat <script>` | | Print the source, pipe-friendly |
+| `versions <script>` | | Every released version |
+| `user <id\|slug>` | | All scripts by one author |
+| `sites` | | Script count per targeted site |
+| `open <script>` | | Print the page URL (`--launch` opens it) |
+| `check <path...>` | | Compare local scripts against their `@updateURL` |
+
+Global flags, accepted before or after the subcommand:
 
 ```
 --proxy URL     proxy, e.g. http://127.0.0.1:7890 (auto-detected)
@@ -101,43 +128,105 @@ const meta = parseUserscriptMeta(source);
 console.log(meta.get('version'), meta.get('match'));
 ```
 
-`new Client()` reuses whatever proxy the machine already has, so a CN environment needs no
-extra configuration.
+## Why is the binary 60–95 MB?
 
-## The proxy problem (read before touching the transport)
+Because it is not really "your program" — it is a whole JavaScript runtime with the program
+inside it. Measured on one machine:
 
-`node:https` and the global `fetch` (undici) **both ignore `HTTP_PROXY` / `HTTPS_PROXY`**.
-Greasy Fork is unreachable from mainland China without a proxy, so this cannot be left to the
-environment. Measured here: with `HTTPS_PROXY` exported, `fetch` to `api.greasyfork.org` fails
-after ~10.5 s; the hand-rolled path returns 200 in ~2 s.
+| | Size |
+|---|---|
+| Our code, bundled and minified | **65 KB** |
+| A hello-world compiled for Windows | 98.5 MB |
+| Our CLI compiled for Windows | 98.5 MB |
+| Our CLI, gzipped | 38.2 MB (2.6× smaller) |
 
-**And an agent will not save you, because the binaries are compiled by Bun:** Bun *ignores*
-`https.Agent#createConnection`. Same code, same machine — Node invokes it once per request,
-Bun invokes it **zero** times and the request then goes straight at the proxy address
-(`ECONNREFUSED`). An agent-based proxy is dead on arrival in a Bun binary.
+The delta between hello-world and the real CLI is **15 KB**, so the size is the runtime, not the
+code. Minifying saves 18 KB and `--bytecode` makes the file *larger*.
 
-So the transport does not use `node:http(s).request` at all. `src/proxy.ts` exports
-`openSocket` (direct, or a hand-written `CONNECT` tunnel) and `src/http.ts` speaks HTTP/1.1
-over that socket by hand, with parsing in `src/http1.ts`. Only `node:net` + `node:tls` are
-involved, and both behave identically on Node and Bun — verified by running the compiled
-Windows binary against a real proxy.
+UPX looks like the answer — it packs the 98 MB binary down to 33 MB (27 MB with `--lzma`) — but
+**the result does not run.** Bun appends the JS payload to the end of the executable, and after
+UPX the runtime can no longer read it: the packed binary prints Bun's own version instead of
+`gf`'s and treats `search` as a script path (`error: Script not found "search"`). `--overlay=copy`
+does not help. So UPX is not used here.
 
-Proxy discovery order:
+That leaves archives as the only honest win, which is why releases ship `.tar.gz` / `.zip`.
+**If size matters, install from npm** — ~50 KB, because the runtime is already on your machine.
+The binaries exist for machines without Node.
 
-1. `GREASYFORK_CLI_PROXY`, `GF_PROXY`, `https_proxy`, `HTTPS_PROXY`, `http_proxy`, `HTTP_PROXY`
-2. `git config --global https.proxy` (many machines only configure git)
+## Notes
 
-Only `http://` and `https://` proxies are supported; a `socks5://` URL is rejected loudly
-rather than failing silently. Connection setup is retried once, because a fresh CONNECT+TLS
-through a proxy occasionally stalls on first use.
+- **No API promise:** the endpoints below are undocumented and can change. They are centralised
+  in `src/client.ts`.
+- **Rate limit:** `robots.txt` asks for `Crawl-delay: 1`. Add delays in loops; prefer the bulk
+  `scripts.json` (100 per page) over per-script calls.
+- **`gf` is a popular name.** GoFrame's CLI is also `gf`; if both are installed, one shadows the
+  other on `PATH`.
+- **Publishing** has no API — only a prefill URL that fills the form for a human to submit:
+  `POST greasyfork.org/<locale>/script_versions/prefill` (needs a session cookie).
 
-## Redirects are load-bearing
+## Troubleshooting
 
-`greasyfork.org/<locale>/scripts/<id>.json` (and `versions.json`, `users/<who>.json`) answer
-**308** to `api.greasyfork.org/...`. `node:http` does not follow redirects, so `src/http.ts`
-does it manually. Without that, every main-site endpoint returns an empty 308 body that reads
-as an empty JSON reply — which is exactly how `info`, `download`, `cat`, `versions` and `user`
-all failed the first time, while `search` and `sites` worked.
+| Symptom | Cause and fix |
+|---|---|
+| `cannot reach https://api.greasyfork.org/...` | No proxy was found. Pass `--proxy http://127.0.0.1:7890`, or set `git config --global https.proxy`. |
+| `did not return JSON` with an empty body | A main-site endpoint was hit without following its 308. Only relevant when editing the transport — `src/http.ts` follows redirects. |
+| `gf __VERSION__` | The binary was compiled from `src/` without running `npm run build`, so the version placeholder was never stamped. |
+| `error: Script not found "search"` | You are running a UPX-packed binary. Bun payloads do not survive UPX. |
+
+## Development
+
+```bash
+npm install
+npm run typecheck     # tsc over src + tests
+npm test              # vitest, offline
+npm run build         # tsc -> dist/ + stamp the version from package.json
+npm pack --dry-run    # inspect what would be published
+```
+
+`scripts/inject-version.mjs` stamps `package.json`'s version into the compiled `__VERSION__`
+placeholder, so the published code never resolves `package.json` at runtime (its relative path
+changes under `dist/`). It also fails the build if a placeholder survives.
+
+### Building a binary locally
+
+```bash
+npm run build
+bun build ./dist/cli.js --compile --minify --target=bun-windows-x64 --outfile gf.exe
+```
+
+Targets: `bun-linux-x64`, `bun-linux-arm64`, `bun-darwin-x64`, `bun-darwin-arm64`,
+`bun-windows-x64`. From Git Bash, pass a native forward-slash path (`C:/...`) — `/c/...` is read
+as a relative path.
+
+## Releasing
+
+```bash
+npm version patch        # or minor / major, bumps package.json
+git push --follow-tags
+```
+
+| Workflow file | What it does |
+|---|---|
+| `.github/workflows/release.yml` | Compiles five platforms, ad-hoc signs the macOS ones, packs archives, writes `SHA256SUMS.txt`, publishes a GitHub Release |
+| `.github/workflows/publish-npm.yml` | Publishes `@greasyfork/cli` to npm with provenance |
+
+Both can be started by hand from the Actions tab; each takes the version and fails when it does
+not match `package.json`, so a tarball, a binary and an npm version can never disagree.
+
+### Enabling the npm publish
+
+**Option A — npm token.** Create a **Granular Access Token** on npmjs.com: read + write, scoped to
+`@greasyfork`, **Bypass 2FA enabled** (the account uses `auth-and-writes`, and a CI runner cannot
+type a one-time password). Store it as the repository secret `NPM_TOKEN`.
+
+**Option B — Trusted Publisher (no secret).** Once the package exists on npm, add a Trusted
+Publisher in its settings: repository `Weidows/greasyfork-cli`, workflow **`publish-npm.yml`**,
+environment **empty** — then delete the `NODE_AUTH_TOKEN` line from the workflow.
+
+> The workflow file name is part of that configuration: renaming `publish-npm.yml` breaks it.
+
+The workflow upgrades npm before publishing (Node 22 ships npm 10.x; trusted publishing needs
+npm ≥ 11.5.1) and skips cleanly with a notice when the version is already live.
 
 ## Endpoints used
 
@@ -153,101 +242,11 @@ all failed the first time, while `search` and `sites` worked.
 | raw code | `https://update.greasyfork.org/scripts/<id>/<name>.user.js` |
 | update meta | same URL with `.user.js` → `.meta.js` |
 
-**Biggest gotcha:** `greasyfork.org/<locale>/scripts.json` **ignores** `q` / `page` / `sort`
-and always returns the default chart. Search must go through the `api.` subdomain.
+**Biggest gotcha:** `greasyfork.org/<locale>/scripts.json` **ignores** `q` / `page` / `sort` and
+always returns the default chart. Search must go through the `api.` subdomain.
 
-Versioned code URLs carry a query string (`.../style.user.js?version=1284070`), so filenames
-and `.meta.js` derivation strip the query first.
-
-## Development
-
-```bash
-npm install
-npm run typecheck     # tsc over src + tests
-npm test              # vitest (offline, no network)
-npm run build         # tsc -> dist/ + inject the version from package.json
-npm pack --dry-run    # inspect what would be published
-```
-
-`scripts/inject-version.mjs` stamps `package.json`'s version into the compiled `__VERSION__`
-placeholder, so the published code never has to resolve `package.json` at runtime (its
-relative path changes under `dist/`). **Always run `npm run build` before compiling a
-binary** — compiling straight from `src/` ships a binary whose `--version` prints
-`__VERSION__`.
-
-### Building a binary locally
-
-```bash
-npm run build
-bun build ./dist/cli.js --compile --minify --target=bun-windows-x64 --outfile gf.exe
-```
-
-Available targets: `bun-linux-x64`, `bun-linux-arm64`, `bun-darwin-x64`, `bun-darwin-arm64`,
-`bun-windows-x64`. When passing an output path to a native program from Git Bash, use a
-native forward-slash path (`C:/...`) — `/c/...` is taken as a relative path.
-
-### Install verification before publishing
-
-```bash
-npm pack
-npm i -g ./greasyfork-cli-0.1.0.tgz
-gf --version && gf search bilibili -n 3
-npm uninstall -g @greasyfork/cli
-```
-
-## Releasing
-
-Two workflows listen on `v*` tags, on purpose — one ships binaries, one ships npm. They fail
-independently.
-
-```bash
-npm version patch        # or minor / major, bumps package.json
-git push --follow-tags
-```
-
-| Workflow file | What it does |
-|---|---|
-| `.github/workflows/release.yml` | Compiles all five platforms, ad-hoc signs the macOS ones, writes `SHA256SUMS.txt`, publishes a GitHub Release |
-| `.github/workflows/publish-npm.yml` | Publishes `@greasyfork/cli` to npm with provenance |
-
-Both can also be started by hand from the Actions tab; each asks for the version and fails if
-it does not match `package.json`, so a tarball, a binary and an npm version can never disagree.
-
-### Enabling the npm publish
-
-`publish-npm.yml` needs one of these before it can publish:
-
-**Option A — npm token (works immediately).** On npmjs.com create a **Granular Access Token**:
-
-- Permissions: read + write, scoped to the `@greasyfork` org
-- **Bypass 2FA: enabled** — this is required, because the account uses `auth-and-writes` 2FA
-  and a CI runner cannot type a one-time password
-
-Then store it as the repository secret `NPM_TOKEN`
-(Settings → Secrets and variables → Actions → New repository secret).
-
-**Option B — Trusted Publisher (no secret at all).** After the package exists on npm once,
-add a Trusted Publisher in the package settings: repository `Weidows/greasyfork-cli`, workflow
-**`publish-npm.yml`**, environment **left empty**. Then delete the `NODE_AUTH_TOKEN` line from
-the workflow. This also gives you provenance for free.
-
-> **The workflow file name is part of the configuration.** A Trusted Publisher binds to the
-> repository *and* the workflow file name, so renaming `publish-npm.yml` silently breaks it.
-
-The workflow upgrades npm before publishing: Node 22 ships npm 10.x, and trusted publishing
-requires npm ≥ 11.5.1. It also skips cleanly when the version is already on npm, so re-pushing
-a tag does not turn the run red.
-
-## Notes
-
-- **No API promise:** these endpoints are undocumented and can change. They are centralised in
-  `src/client.ts`.
-- **Rate limit:** `robots.txt` asks for `Crawl-delay: 1`. Add delays in loops; prefer the bulk
-  `scripts.json` (100 per page) over per-script calls.
-- **Publishing** has no API. There is only a prefill URL that populates the form for a human to
-  submit: `POST greasyfork.org/<locale>/script_versions/prefill`, which needs a session cookie.
-- **`gf` is a popular name.** GoFrame's CLI is also `gf`; if both are installed, one will shadow
-  the other on `PATH`. Adjust as needed.
+Versioned code URLs carry a query string (`.../style.user.js?version=1284070`), so filenames and
+`.meta.js` derivation strip it first.
 
 ## Licence
 
