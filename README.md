@@ -1,6 +1,6 @@
 # gf — Greasy Fork CLI
 
-<img src="https://raw.githubusercontent.com/Weidows/greasyfork-cli/main/assets/header.webp" alt="gf — a fork and a terminal window in Greasy Fork's maroon palette" width="100%">
+<img src="https://raw.githubusercontent.com/Weidows/greasyfork-cli/main/assets/header.webp" alt="gf — Greasy Fork's fork badge beside a script list, in the site's maroon and green palette" width="100%">
 
 **Search, inspect and download [Greasy Fork](https://greasyfork.org) userscripts from the
 terminal.**<br>

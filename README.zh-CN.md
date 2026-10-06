@@ -1,6 +1,6 @@
 # gf — Greasy Fork CLI
 
-<img src="https://raw.githubusercontent.com/Weidows/greasyfork-cli/main/assets/header.webp" alt="gf —— 叉子与终端窗口，取 Greasy Fork 的枣红配色" width="100%">
+<img src="https://raw.githubusercontent.com/Weidows/greasyfork-cli/main/assets/header.webp" alt="gf —— Greasy Fork 的叉子徽章与脚本列表，取站点枣红与深绿配色" width="100%">
 
 **在终端里搜索、查看、下载 [Greasy Fork](https://greasyfork.org) 用户脚本。**<br>
 以 [`@greasyfork/cli`](https://www.npmjs.com/package/@greasyfork/cli) 发布 · 零运行时依赖 · 同时提供带类型的库和 `gf` 命令。
