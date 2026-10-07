@@ -29,7 +29,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       tag: ${{ steps.v.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Guards the classic slip of tagging v0.2.0 while package.json still says
       # 0.1.0, which would ship a binary and an npm version that disagree.
@@ -73,12 +73,12 @@ jobs:
           - { target: bun-darwin-arm64, runner: macos-14,       asset: gf-darwin-arm64,    smoke: true,  icon: '' }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Build with Node so the version stamp runs: __VERSION__ is a whole string
       # literal in dist/, and compiling straight from src/ would ship a binary
       # whose `--version` prints the literal placeholder.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           # 22, not 20: vitest 5 requires ^22.12 and warns (EBADENGINE) below that.
           node-version: 22
@@ -125,7 +125,7 @@ jobs:
           "out/${{ matrix.asset }}" search bilibili -n 2 \
             || echo "::warning::live search failed (network-dependent, not fatal)"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.asset }}
           path: out/${{ matrix.asset }}
@@ -135,7 +135,7 @@ jobs:
     needs: [meta, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: out
           merge-multiple: true
@@ -166,7 +166,7 @@ jobs:
           ls -l
           cat SHA256SUMS.txt
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           name: ${{ needs.meta.outputs.tag }}
