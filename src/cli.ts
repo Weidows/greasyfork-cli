@@ -38,7 +38,6 @@ import {
 } from './publish.js';
 import {
   clearSession,
-  configDir,
   currentUser,
   describeError,
   loadSession,

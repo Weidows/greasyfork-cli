@@ -148,7 +148,9 @@ gf login --cookie -                  # 从 stdin 读，不进 shell history
 
 `--cookie` 接受裸值、`name=value` 对，或整条 `Cookie:` 头；也能自动分辨这个值是**已转义**的（浏览器收到的 `Set-Cookie` 原样）还是**已解码**的（DevTools 显示的样子）。保存前会先向站点校验，所以失效的 cookie 会立刻报错，而不是拖到下次发布才炸。
 
-**只落盘 cookie**，Windows 在 `%APPDATA%\gf\session.json`，其他平台在 `~/.config/gf/session.json`（`GF_SESSION` 与 `GF_CONFIG_DIR` 可覆盖）。
+**只落盘 cookie**，权限 0600，位置在**所有平台**统一为 `~/.config/gf/session.json` —— Windows / macOS / Linux 都一样（设了 `XDG_CONFIG_HOME` 则用 `$XDG_CONFIG_HOME/gf/session.json`；`GF_SESSION` 与 `GF_CONFIG_DIR` 可覆盖）。
+
+**刻意不用** Windows 的 `%APPDATA%`：那是 *roaming* 配置目录，域账号在登录/注销时会被 Windows 同步到服务器，会话 cookie 会跟着跑。0.2.3 之前的版本用的就是它，**首次读取会自动把旧会话迁移**到新位置并删掉旧文件，所以升级不会把你登出。一旦你设了 `GF_CONFIG_DIR`，就**不会**发生任何迁移 —— 显式指定的目录不碰。
 
 `gf logout` **只删本地文件、不碰任何别的东西** —— 不会影响你的浏览器登录态。站点的登出会调 `invalidate_all_sessions!`，即把该账号所有会话踢下线；`gf logout --server` 才会这么做，并且会明确告诉你。
 

@@ -57,18 +57,52 @@ export function sessionCookieFromInput(input: string): Cookie | null {
   };
 }
 
-/** Where the session lives; `GF_CONFIG_DIR` overrides it. */
-export function configDir(): string {
-  const explicit = process.env.GF_CONFIG_DIR;
-  if (explicit) return explicit;
-  if (process.platform === 'win32' && process.env.APPDATA) return join(process.env.APPDATA, 'gf');
-  const xdg = process.env.XDG_CONFIG_HOME;
-  if (xdg) return join(xdg, 'gf');
+/**
+ * Where the session lives: `~/.config/gf`, on every platform.
+ *
+ * Deliberately **not** `%APPDATA%` on Windows. That is the *roaming* profile — on
+ * a domain-joined machine Windows copies it to the server at logon and logoff,
+ * so a session cookie would travel with it. A second reason: one documented
+ * directory instead of three, so every message and doc quotes the same path.
+ *
+ * `GF_CONFIG_DIR` wins outright; `XDG_CONFIG_HOME` is honoured on any platform
+ * (that is what the spec says it means, and it is what makes this testable).
+ * `env` is injectable so a test can prove the default without running on Windows.
+ */
+export function configDir(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.GF_CONFIG_DIR) return env.GF_CONFIG_DIR;
+  if (env.XDG_CONFIG_HOME) return join(env.XDG_CONFIG_HOME, 'gf');
   return join(homedir(), '.config', 'gf');
 }
 
 export function sessionPath(): string {
   return process.env.GF_SESSION ?? join(configDir(), 'session.json');
+}
+
+/** Where Windows builds before 0.2.3 kept the session. */
+function legacySessionPath(env: NodeJS.ProcessEnv): string | undefined {
+  return env.APPDATA ? join(env.APPDATA, 'gf', 'session.json') : undefined;
+}
+
+/**
+ * The legacy file that belongs to `path`, or undefined when none does.
+ *
+ * Migration and the cleanup in `clearSession` apply to the **default** location
+ * only: an explicit `path` argument or `GF_SESSION` means "use exactly this
+ * file", and moving data into or out of it uninvited would be surprising.
+ */
+function legacyFor(path: string, env: NodeJS.ProcessEnv): string | undefined {
+  // Any explicit override means "use exactly where I said" — never raid %APPDATA%.
+  //
+  // GF_CONFIG_DIR must be named separately from the path comparison below, because
+  // setting it makes configDir() *return* that directory: `path` then equals
+  // `join(configDir(env), 'session.json')`, so an explicitly chosen directory
+  // looks identical to the default and gets migrated into. Measured — that moved a
+  // live session out of %APPDATA% during a verification run.
+  if (env.GF_SESSION) return undefined;
+  if (env.GF_CONFIG_DIR) return undefined;
+  if (path !== join(configDir(env), 'session.json')) return undefined;
+  return legacySessionPath(env);
 }
 
 export interface SessionFile {
@@ -79,7 +113,14 @@ export interface SessionFile {
   cookies: Cookie[];
 }
 
-export function loadSession(path = sessionPath()): CookieJar | undefined {
+/** One parsed session file. */
+interface StoredSession {
+  jar: CookieJar;
+  username?: string;
+}
+
+/** Read one session file; undefined when it is missing, blank or corrupt. */
+function readSessionFile(path: string): StoredSession | undefined {
   if (!existsSync(path)) return undefined;
   let raw: string;
   try {
@@ -90,10 +131,37 @@ export function loadSession(path = sessionPath()): CookieJar | undefined {
   try {
     const parsed = JSON.parse(raw) as Partial<SessionFile>;
     const jar = CookieJar.fromJSON(parsed.cookies);
-    return jar.size > 0 ? jar : undefined;
+    if (jar.size === 0) return undefined;
+    return {
+      jar,
+      ...(typeof parsed.username === 'string' ? { username: parsed.username } : {}),
+    };
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Read the stored session, moving it off the pre-0.2.3 Windows location once.
+ *
+ * Without the migration, changing the default directory would silently sign out
+ * every existing Windows user. It is deliberately one-way and best-effort: the
+ * read already succeeded, so a failed move must not cost the user their session.
+ */
+export function loadSession(path = sessionPath()): CookieJar | undefined {
+  const stored = readSessionFile(path);
+  if (stored) return stored.jar;
+
+  const legacy = legacyFor(path, process.env);
+  const old = legacy ? readSessionFile(legacy) : undefined;
+  if (!old || !legacy) return undefined;
+  try {
+    saveSession(old.jar, old.username, path);
+    rmSync(legacy, { force: true });
+  } catch {
+    // Keep the old file; the caller still gets the jar that was just read.
+  }
+  return old.jar;
 }
 
 export function saveSession(jar: CookieJar, username?: string, path = sessionPath()): void {
@@ -104,12 +172,26 @@ export function saveSession(jar: CookieJar, username?: string, path = sessionPat
   };
   mkdirSync(join(path, '..'), { recursive: true });
   writeFileSync(path, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
+
+  // Drop the pre-0.2.3 copy, or a later `gf logout` would leave it behind to be
+  // "migrated" straight back on the next read.
+  const legacy = legacyFor(path, process.env);
+  if (legacy) rmSync(legacy, { force: true });
 }
 
 export function clearSession(path = sessionPath()): boolean {
-  if (!existsSync(path)) return false;
-  rmSync(path);
-  return true;
+  let removed = false;
+  if (existsSync(path)) {
+    rmSync(path);
+    removed = true;
+  }
+  // The legacy file too, for the same reason as in saveSession.
+  const legacy = legacyFor(path, process.env);
+  if (legacy && existsSync(legacy)) {
+    rmSync(legacy, { force: true });
+    removed = true;
+  }
+  return removed;
 }
 
 /** The login form's `action` is what to POST to, so a locale prefix is never guessed. */

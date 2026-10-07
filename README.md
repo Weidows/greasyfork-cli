@@ -178,8 +178,15 @@ whether the value is percent-escaped (`Set-Cookie` as the browser received it) o
 DevTools displays). It is verified against the site before being saved, so a stale cookie fails
 immediately with a message saying so rather than at the next publish.
 
-Only the cookie is ever stored, mode 0600, at `%APPDATA%\gf\session.json` on Windows or
-`~/.config/gf/session.json` elsewhere (`GF_SESSION` and `GF_CONFIG_DIR` override both).
+Only the cookie is ever stored, mode 0600, at `~/.config/gf/session.json` on **every** platform — the
+same path on Windows, macOS and Linux (`$XDG_CONFIG_HOME/gf/session.json` when that variable is set,
+and `GF_SESSION` / `GF_CONFIG_DIR` override either).
+
+Deliberately **not** `%APPDATA%` on Windows: that is the *roaming* profile, which a domain-joined
+machine syncs to the server at logon and logoff, so a session cookie would travel with it. Builds
+before 0.2.3 used it; the first read **migrates** an existing session to the new location and removes
+the old file, so an upgrade does not sign you out. Set `GF_CONFIG_DIR` and nothing is migrated — an
+explicit directory is left entirely alone.
 
 `gf logout` removes the local file and **nothing else** — it does not touch your browser session.
 The site's sign-out calls `invalidate_all_sessions!`, so reaching it would sign you out everywhere;

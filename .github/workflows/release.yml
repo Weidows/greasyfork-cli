@@ -56,12 +56,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `icon` is a separate column rather than a condition on the Compile step
+        # because --windows-icon is a Windows-only flag: passing it to a Linux or
+        # darwin build fails the job. Only the PE (Windows) format carries an
+        # embedded icon anyway — a bare Mach-O or ELF binary has nowhere to put
+        # one, so the other targets get an empty value.
+        #
+        # The path is repo-relative on purpose: the job's cwd is the checkout
+        # root, and Bun treats an MSYS-style /c/... path as a *relative* one
+        # (a trap already recorded in the README's binary section).
         include:
-          - { target: bun-linux-x64,    runner: ubuntu-latest,  asset: gf-linux-x64,       smoke: true }
-          - { target: bun-linux-arm64,  runner: ubuntu-latest,  asset: gf-linux-arm64,     smoke: false }
-          - { target: bun-windows-x64,  runner: windows-latest, asset: gf-windows-x64.exe, smoke: true }
-          - { target: bun-darwin-x64,   runner: macos-14,       asset: gf-darwin-x64,      smoke: false }
-          - { target: bun-darwin-arm64, runner: macos-14,       asset: gf-darwin-arm64,    smoke: true }
+          - { target: bun-linux-x64,    runner: ubuntu-latest,  asset: gf-linux-x64,       smoke: true,  icon: '' }
+          - { target: bun-linux-arm64,  runner: ubuntu-latest,  asset: gf-linux-arm64,     smoke: false, icon: '' }
+          - { target: bun-windows-x64,  runner: windows-latest, asset: gf-windows-x64.exe, smoke: true,  icon: '--windows-icon=assets/icon.ico' }
+          - { target: bun-darwin-x64,   runner: macos-14,       asset: gf-darwin-x64,      smoke: false, icon: '' }
+          - { target: bun-darwin-arm64, runner: macos-14,       asset: gf-darwin-arm64,    smoke: true,  icon: '' }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +100,7 @@ jobs:
           mkdir -p out
           bun build ./dist/cli.js --compile --minify \
             --target=${{ matrix.target }} \
+            ${{ matrix.icon }} \
             --outfile "out/${{ matrix.asset }}"
           ls -l out
 
