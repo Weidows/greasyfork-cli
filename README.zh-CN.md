@@ -80,11 +80,13 @@ gf sites -n 20                    # 各站点脚本数量排行
 gf open 405130 --launch           # 打开脚本页
 gf check ./scripts                # 检查本地脚本是否过时
 
-gf login                          # 登录（密码走隐藏输入或 GF_PASSWORD）
+gf login                          # 登录（密码走不回显的提示，或 GF_PASSWORD）
+gf login --cookie -               # 或从浏览器粘会话 cookie（读 stdin）
 gf whoami                         # 当前存的会话还有效吗？
 gf publish my.user.js             # 发布或更新脚本
 gf publish my.user.js --dry-run   # 只抓表单、拼载荷，不提交任何东西
-gf logout                         # 清除会话
+gf logout                         # 只清本地会话（不动浏览器）
+gf logout --server                # 连服务器一起登出，浏览器也会掉线
 ```
 
 `<script>` 参数接受 `405130`、`405130-slug` 或完整 URL 三种写法。
@@ -127,7 +129,28 @@ gf publish my.user.js --force             # 确认站点的警告并重提
 
 想安全试手：用一次性小号 + `unlisted` 脚本。这是对真实账号的真实写入。
 
-密码**不作为命令行参数**（会进 shell history，且在 Windows 上还会出现在进程列表里）。它来自 `GF_PASSWORD` 环境变量，或隐藏输入的交互式提示 —— Windows 上用 PowerShell `Read-Host -AsSecureString`，其他平台用 `stty -echo`。**只落盘 cookie**，Windows 在 `%APPDATA%\gf\session.json`，其他平台在 `~/.config/gf/session.json`（`GF_SESSION` 与 `GF_CONFIG_DIR` 可覆盖）。
+密码**不作为命令行参数**（会进 shell history，且在 Windows 上还会出现在进程列表里）。它来自 `GF_PASSWORD` 环境变量，或隐藏回显的交互式提示 —— 实现是 `readline` 的 raw mode，靠它关掉终端驱动自身的回显。（最初用的是 PowerShell `Read-Host -AsSecureString`，但它**在 Node 派生的子进程里根本不可用**：带 `-NonInteractive` 时 PowerShell 拒绝弹提示，去掉该标志后子进程又拿不到控制台，于是没问密码就非零退出。两种方式都实测过。）
+
+```bash
+gf login --email me@example.com      # 交互式，密码不回显
+gf login --otp 123456                # 账号开了 2FA 时
+GF_PASSWORD=… gf login               # 给脚本用；注意 shell history
+```
+
+**粘贴会话 cookie。** 这是**用 GitHub / GitLab / Google 注册的账号唯一的进路** —— 这类账号可能**完全没有密码**（站点提供「移除密码」，且在设置「安全登录」前不允许发布脚本）。如果你不想把密码交给 CLI，这也是更实际的选择。
+
+```bash
+# 在已登录的浏览器标签页：DevTools → Application → Cookies → greasyfork.org
+# 复制 _greasyfork_session 的值，然后：
+gf login --cookie '_greasyfork_session=…'
+gf login --cookie -                  # 从 stdin 读，不进 shell history
+```
+
+`--cookie` 接受裸值、`name=value` 对，或整条 `Cookie:` 头；也能自动分辨这个值是**已转义**的（浏览器收到的 `Set-Cookie` 原样）还是**已解码**的（DevTools 显示的样子）。保存前会先向站点校验，所以失效的 cookie 会立刻报错，而不是拖到下次发布才炸。
+
+**只落盘 cookie**，Windows 在 `%APPDATA%\gf\session.json`，其他平台在 `~/.config/gf/session.json`（`GF_SESSION` 与 `GF_CONFIG_DIR` 可覆盖）。
+
+`gf logout` **只删本地文件、不碰任何别的东西** —— 不会影响你的浏览器登录态。站点的登出会调 `invalidate_all_sessions!`，即把该账号所有会话踢下线；`gf logout --server` 才会这么做，并且会明确告诉你。
 
 全局参数，放子命令**前后都行**：
 

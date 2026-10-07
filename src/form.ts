@@ -12,10 +12,23 @@
 /** One form field: a name and the value Rails expects. */
 export type FormFields = Array<[string, string]>;
 
+/**
+ * Percent-encode one string the way a form/cookie encoder does.
+ *
+ * `encodeURIComponent` leaves `!*'()` alone; Rails (via `Rack::Utils.escape`)
+ * escapes them. Sharing this between form pairs and the session-cookie value
+ * keeps one definition of "correctly escaped" in the project.
+ */
+export function percentEncode(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
 /** Percent-encode one field the way a browser's form encoder does. */
 function encodePair(key: string, value: string): string {
-  const enc = (s: string): string =>
-    encodeURIComponent(s).replace(/%20/g, '+').replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  const enc = (s: string): string => percentEncode(s).replace(/%20/g, '+');
   return `${enc(key)}=${enc(value)}`;
 }
 

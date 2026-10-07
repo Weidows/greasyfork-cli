@@ -22,7 +22,7 @@ import {
   type Values,
 } from './args.js';
 import { Client, MAIN_SITE, VERSION, type ClientOptions } from './client.js';
-import type { CookieJar } from './cookie.js';
+import { CookieJar } from './cookie.js';
 import { human, orDash, shortDate, table } from './format.js';
 import type { ScriptTypeName } from './form.js';
 import { looksLikeSignIn } from './htmlform.js';
@@ -44,10 +44,12 @@ import {
   loadSession,
   login,
   saveSession,
+  sessionCookieFromInput,
   sessionPath,
+  SESSION_COOKIE_NAME,
 } from './session.js';
 import { SORT_NAMES, type Script, type SortName } from './types.js';
-import { confirm, isInteractive, prompt, promptHidden } from './tty.js';
+import { confirm, isInteractive, prompt, promptHidden, readStdin } from './tty.js';
 
 const out = (s = '') => process.stdout.write(`${s}\n`);
 const err = (s: string) => process.stderr.write(`${s}\n`);
@@ -72,7 +74,10 @@ export interface Command {
 let activeJar: CookieJar | undefined;
 let sessionTouched = false;
 
-function buildClient(values: Values, options: { session?: boolean } = {}): Client {
+function buildClient(
+  values: Values,
+  options: { session?: boolean; jar?: CookieJar } = {},
+): Client {
   const clientOptions: ClientOptions = {
     timeoutMs: numberValue(values, 'timeout', 30) * 1000,
   };
@@ -82,7 +87,12 @@ function buildClient(values: Values, options: { session?: boolean } = {}): Clien
   const locale = values.locale;
   if (typeof locale === 'string') clientOptions.locale = locale;
   if (booleanValue(values, 'verbose')) clientOptions.onRequest = (line) => err(line);
-  if (options.session) {
+  if (options.jar) {
+    // An explicit jar (a pasted session) wins over anything on disk.
+    clientOptions.jar = options.jar;
+    activeJar = options.jar;
+    sessionTouched = true;
+  } else if (options.session) {
     const jar = loadSession();
     if (jar) {
       clientOptions.jar = jar;
@@ -444,8 +454,14 @@ async function readEmail(explicit: string): Promise<string> {
 
 async function cmdLogin(argv: string[]): Promise<void> {
   const { values } = parse(loginCommand, argv);
-  const client = buildClient(values, { session: true });
 
+  const cookieArg = stringValue(values, 'cookie');
+  if (cookieArg) {
+    await loginWithCookie(values, cookieArg);
+    return;
+  }
+
+  const client = buildClient(values, { session: true });
   const email = await readEmail(stringValue(values, 'email'));
   const password = await readPassword(email);
   const otp = stringValue(values, 'otp') || undefined;
@@ -458,39 +474,71 @@ async function cmdLogin(argv: string[]): Promise<void> {
   out(`signed in as ${result.username || email}`);
   out(`session : ${sessionPath()}`);
   out(`cookies : ${jar.size}`);
-  if (!result.usedOtp) {
-    out('note    : two-factor login was not needed for this account');
+}
+
+/**
+ * Sign in with a session cookie copied out of a browser.
+ *
+ * The only route for an account created through GitHub / GitLab / Google: such an
+ * account can have no password at all, so the e-mail-and-password path can never
+ * succeed for it. Also the pragmatic choice for anyone who would rather not hand a
+ * password to a CLI.
+ *
+ * `--cookie -` reads stdin, which keeps the value out of the shell history and,
+ * on Windows, out of the process list — prefer it over an inline argument.
+ */
+async function loginWithCookie(values: Values, cookieArg: string): Promise<void> {
+  const raw = cookieArg === '-' ? await readStdin() : cookieArg;
+  const cookie = sessionCookieFromInput(raw);
+  if (!cookie) {
+    throw new Error(
+      `no cookie value given — copy the value of ${SESSION_COOKIE_NAME} from a logged-in greasyfork.org tab`,
+    );
   }
+
+  const jar = new CookieJar();
+  jar.set(cookie);
+  const client = buildClient(values, { jar });
+  const username = await currentUser(client);
+  if (username === null) {
+    throw new Error(
+      'that cookie was rejected — copy a fresh _greasyfork_session from a logged-in greasyfork.org tab ' +
+        '(EditThisCookie / DevTools → Application → Cookies)',
+    );
+  }
+
+  saveSession(jar, username);
+  out(`signed in as ${username || 'unknown'} (pasted session)`);
+  out(`session : ${sessionPath()}`);
+  out('note    : this lasts as long as that browser session does; re-copy when it expires');
 }
 
 async function cmdLogout(argv: string[]): Promise<void> {
   const { values } = parse(logoutCommand, argv);
-  await serverLogout(values);
-  const removed = clearSession();
-  out(removed ? `signed out (removed ${sessionPath()})` : 'no stored session to remove');
-}
 
-/**
- * Best-effort server-side sign-out.
- *
- * The site exposes `GET /<locale>/users/sign_out` specifically so a plain link (or
- * a client like this) can log out without a CSRF token — Devise's own
- * `DELETE /users/sign_out` needs one. Removing the local cookie is what actually
- * signs this CLI out, so a network failure here is reported, never fatal.
- */
-async function serverLogout(values: Values): Promise<void> {
-  const client = buildClient(values, { session: true });
-  if (!client.jar) return;
-  const url = `${client.mainSite}/${client.locale}/users/sign_out`;
-  try {
-    const res = await client.fetchHtml(url);
-    if (!looksLikeSignIn(res.body)) return;
-  } catch {
-    // Offline or the route moved — the local file removal is the real logout.
-    return;
+  let note = '';
+  if (booleanValue(values, 'server')) {
+    // Destructive on purpose, hence opt-in: SessionsController#destroy calls
+    // `invalidate_all_sessions!`, so this signs the account out EVERYWHERE —
+    // including the browser the user is logged into. Local-only is the default
+    // precisely so a routine `gf logout` cannot take the browser with it.
+    const client = buildClient(values, { session: true });
+    if (client.jar) {
+      const url = `${client.mainSite}/${client.locale}/users/sign_out`;
+      const res = await client.fetchHtml(url);
+      if (!looksLikeSignIn(res.body)) {
+        throw new Error(`the site did not confirm the sign-out (ended up at ${res.finalUrl})`);
+      }
+      note = ' · all sessions for that account were invalidated — your browser is signed out too';
+    }
   }
-  activeJar = undefined;
-  sessionTouched = false;
+
+  const removed = clearSession();
+  out(
+    removed
+      ? `signed out locally${note} (removed ${sessionPath()})`
+      : 'no stored session to remove',
+  );
 }
 
 async function cmdWhoami(argv: string[]): Promise<void> {
@@ -679,11 +727,12 @@ const checkCommand: Command = {
 const loginCommand: Command = {
   name: 'login',
   aliases: [],
-  usage: 'login [--email ME] [--otp CODE]',
+  usage: 'login [--email ME] [--otp CODE] | login --cookie <VALUE|-]',
   brief: 'sign in and store the session cookie',
   options: {
     email: { type: 'string' },
     otp: { type: 'string' },
+    cookie: { type: 'string' },
   },
   run: cmdLogin,
 };
@@ -691,9 +740,9 @@ const loginCommand: Command = {
 const logoutCommand: Command = {
   name: 'logout',
   aliases: [],
-  usage: 'logout',
-  brief: 'forget the stored session',
-  options: {},
+  usage: 'logout [--server]',
+  brief: 'forget the stored session (local only, unless --server)',
+  options: { server: { type: 'boolean' } },
   run: cmdLogout,
 };
 

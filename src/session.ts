@@ -17,9 +17,45 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Client } from './client.js';
-import { CookieJar, type Cookie } from './cookie.js';
+import { CookieJar, parseCookieHeader, type Cookie } from './cookie.js';
+import { percentEncode } from './form.js';
 import { findAuthenticityToken, findFormHtml, findFlash, hasOtpField, looksLikeSignIn, stripTags } from './htmlform.js';
 import { HttpError, NetworkError, type HttpResponse } from './http.js';
+
+/** The one cookie that *is* the session. */
+export const SESSION_COOKIE_NAME = '_greasyfork_session';
+
+/**
+ * Build the session cookie from whatever the user pasted.
+ *
+ * Only the cookie is ever needed, and the reason this exists at all: an account
+ * created through an external provider (GitHub / GitLab / Google) can have **no
+ * password at all** — the site offers `remove_password` and refuses to let such an
+ * account post until it has a "secure login". For those accounts a pasted session
+ * is the only way in.
+ *
+ * Accepts a bare value, a `name=value` pair, or a whole `Cookie:` header, because
+ * which of those a browser's devtools hands over depends on where you copy from.
+ */
+export function sessionCookieFromInput(input: string): Cookie | null {
+  const raw = input.trim();
+  if (!raw) return null;
+
+  const withoutPrefix = raw.replace(/^cookie\s*:\s*/i, '');
+  const pairs = parseCookieHeader(withoutPrefix);
+  const named = pairs.find((p) => p.name === SESSION_COOKIE_NAME);
+  const value = named ? named.value : raw;
+
+  // The wire form is percent-escaped (a captured `Set-Cookie` reads
+  // `…%2F…--…%3D%3D`), but devtools usually shows the decoded value, and a
+  // decoded base64 value never contains `%` — so `%` is the tell.
+  const looksEscaped = /%[0-9A-Fa-f]{2}/.test(value);
+  return {
+    name: SESSION_COOKIE_NAME,
+    value: looksEscaped ? value : percentEncode(value),
+    path: '/',
+  };
+}
 
 /** Where the session lives; `GF_CONFIG_DIR` overrides it. */
 export function configDir(): string {

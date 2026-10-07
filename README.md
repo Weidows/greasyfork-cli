@@ -92,11 +92,13 @@ gf sites -n 20                    # scripts per site
 gf open 405130 --launch           # open the script page
 gf check ./scripts                # check local scripts for updates
 
-gf login                          # sign in (password from a hidden prompt, or GF_PASSWORD)
+gf login                          # sign in (password from a no-echo prompt, or GF_PASSWORD)
+gf login --cookie -               # or paste a session cookie from your browser (stdin)
 gf whoami                         # is the stored session still valid?
 gf publish my.user.js             # publish or update a script
 gf publish my.user.js --dry-run   # build the payload and stop, submitting nothing
-gf logout                         # forget the session
+gf logout                         # forget the local session (browser untouched)
+gf logout --server                # sign out everywhere, browser included
 ```
 
 `<script>` accepts `405130`, `405130-slug`, or a full URL.
@@ -143,11 +145,44 @@ the author's own confirmations to make; `--force` ticks them, and nothing else d
 
 To try it safely: use a throwaway account and an `unlisted` script. This writes to a real account.
 
-The password is never an argument (it would land in shell history and, on Windows, in the process
-list). It comes from `GF_PASSWORD` or a hidden interactive prompt — PowerShell `Read-Host
--AsSecureString` on Windows, `stty -echo` elsewhere. Only the resulting cookie is stored, at
-`%APPDATA%\gf\session.json` on Windows or `~/.config/gf/session.json` elsewhere (`GF_SESSION` and
-`GF_CONFIG_DIR` override both).
+There are two ways to sign in, and for some accounts only the second one works.
+
+**Password.** Never an argument — that would land in shell history and, on Windows, in the process
+list. It comes from `GF_PASSWORD`, or a no-echo prompt: `readline` with raw mode, which is what
+turns off the terminal driver's own echo. (PowerShell `Read-Host -AsSecureString` was tried first
+and does not work when spawned from Node — with `-NonInteractive` PowerShell refuses to prompt, and
+without it the child still has no console to read from, so it exits non-zero having never asked.
+Measured both ways.)
+
+```bash
+gf login --email me@example.com      # prompts for the password with echo off
+gf login --otp 123456                # with an account that has 2FA enabled
+GF_PASSWORD=… gf login               # for scripts; beware the shell history
+```
+
+**A pasted session cookie.** The only route in for an account created through GitHub / GitLab /
+Google, which can have **no password at all** — the site offers to remove a password and keeps such
+accounts from posting until they set up a "secure login". Also the pragmatic choice if you would
+rather not hand a password to a CLI.
+
+```bash
+# in a logged-in browser tab: DevTools → Application → Cookies → greasyfork.org
+# copy the value of _greasyfork_session, then:
+gf login --cookie '_greasyfork_session=…'
+gf login --cookie -                  # read from stdin, so it stays out of shell history
+```
+
+`--cookie` accepts a bare value, a `name=value` pair, or a whole `Cookie:` header, and shrugs off
+whether the value is percent-escaped (`Set-Cookie` as the browser received it) or decoded (what
+DevTools displays). It is verified against the site before being saved, so a stale cookie fails
+immediately with a message saying so rather than at the next publish.
+
+Only the cookie is ever stored, mode 0600, at `%APPDATA%\gf\session.json` on Windows or
+`~/.config/gf/session.json` elsewhere (`GF_SESSION` and `GF_CONFIG_DIR` override both).
+
+`gf logout` removes the local file and **nothing else** — it does not touch your browser session.
+The site's sign-out calls `invalidate_all_sessions!`, so reaching it would sign you out everywhere;
+`gf logout --server` does that deliberately, and says so.
 
 Global flags, accepted before or after the subcommand:
 

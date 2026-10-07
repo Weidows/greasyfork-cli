@@ -3,23 +3,89 @@
  *
  * The password must never arrive as a command-line argument: Windows puts the
  * whole command line in the process list, and on every platform a shell writes
- * it to history. So it is read from `GF_PASSWORD`, or typed at a hidden prompt.
+ * it to history. So it is read from `GF_PASSWORD`, or typed at a no-echo prompt.
  *
- * A hidden prompt cannot be done in pure Node on Windows — there is no
- * `readline` hook for "don't echo" — so the OS's own facility is used: PowerShell
- * `Read-Host -AsSecureString` there, `stty -echo` elsewhere.
+ * The no-echo prompt is plain `readline`, not a child process. Borrowing the OS's
+ * own facility was tried first and does not work:
+ *
+ *  - PowerShell `Read-Host -AsSecureString` spawned from Node: with
+ *    `-NonInteractive` PowerShell refuses to prompt at all, and **without it the
+ *    child still has no console to read from** — it exits non-zero with an empty
+ *    stderr, so the user sees "could not read the password" without ever being
+ *    asked for one. Measured both ways on Windows 11 from Git Bash.
+ *  - `stty -echo` via `sh`: the same shape of problem, plus `/dev/tty`
+ *    assumptions that MinTTY-style terminals do not satisfy.
+ *
+ * `readline` with `terminal: true` is what works, and it is already proven on the
+ * user's machine: the e-mail prompt uses it. Raw mode turns off the terminal
+ * driver's own echo, and pointing readline's output at a sink discards the line it
+ * would otherwise redraw. No subprocess, no platform branch, no internals.
  */
 
-import { spawn, spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { Writable } from 'node:stream';
 
 /** Whether an interactive prompt is possible at all. */
 export function isInteractive(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
-/** Read one line from stdin with echo on (email addresses, OTP codes, confirms). */
+/**
+ * Piped-input line reader.
+ *
+ * A fresh `readline` interface per prompt looks fine but silently drops
+ * look-ahead: readline buffers whatever arrived in the same chunk, and closing
+ * the interface discards it. With `printf 'email\npassword\n' | gf login` the
+ * e-mail prompt consumed both lines and the password prompt then hung forever.
+ * So non-TTY input is read here instead, where the leftover stays put.
+ */
+let buffered = '';
+let stdinEnded = false;
+let stdinReady = false;
+let waiting: ((line: string | null) => void) | undefined;
+
+function deliver(): void {
+  if (!waiting) return;
+  const newline = buffered.indexOf('\n');
+  if (newline >= 0) {
+    const line = buffered.slice(0, newline).replace(/\r$/, '');
+    buffered = buffered.slice(newline + 1);
+    const resolve = waiting;
+    waiting = undefined;
+    resolve(line);
+  } else if (stdinEnded) {
+    const resolve = waiting;
+    waiting = undefined;
+    resolve(buffered.length > 0 ? buffered : null);
+    buffered = '';
+  }
+}
+
+function readPipedLine(): Promise<string | null> {
+  if (!stdinReady) {
+    stdinReady = true;
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk: string) => {
+      buffered += chunk;
+      deliver();
+    });
+    process.stdin.on('end', () => {
+      stdinEnded = true;
+      deliver();
+    });
+  }
+  return new Promise<string | null>((resolve) => {
+    waiting = resolve;
+    deliver();
+  });
+}
+
+/** Read one line, with echo when that means anything. */
 export async function prompt(question: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    process.stdout.write(question);
+    return ((await readPipedLine()) ?? '').trim();
+  }
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     return await new Promise<string>((resolve) => {
@@ -39,85 +105,63 @@ export async function confirm(question: string, defaultYes = false): Promise<boo
   return answer === 'y' || answer === 'yes';
 }
 
-/** Read a line with the typed characters hidden. */
-export function promptHidden(question: string): Promise<string> {
-  if (!isInteractive()) {
-    // Not a terminal: a piped stdin is the only option left, and echoing is
-    // moot because nothing is showing.
-    return prompt(question);
-  }
-  return process.platform === 'win32'
-    ? promptHiddenWindows(question)
-    : promptHiddenPosix(question);
+/** Read all of stdin, for `--flag -` style input. */
+export async function readStdin(): Promise<string> {
+  if (process.stdin.isTTY) return '';
+  const chunks: string[] = [];
+  process.stdin.setEncoding('utf8');
+  for await (const chunk of process.stdin) chunks.push(chunk as string);
+  return chunks.join('');
 }
+
+/** A write-only sink: readline redraws the line here instead of on screen. */
+const sink = new Writable({
+  write(_chunk: unknown, _encoding: unknown, callback: () => void): void {
+    callback();
+  },
+});
 
 /**
- * PowerShell reads the value into a `SecureString` and writes the plaintext to
- * stdout. Nothing is echoed and nothing lands in the command line, because the
- * prompt text is the only thing passed in.
- */
-function promptHiddenWindows(question: string): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    const script = [
-      '$ErrorActionPreference = "Stop"',
-      `$sec = Read-Host -AsSecureString -Prompt ${psQuote(question)}`,
-      '$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)',
-      'try { [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)) }',
-      'finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }',
-    ].join('; ');
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-      stdio: ['inherit', 'pipe', 'inherit'],
-    });
-    let out = '';
-    child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolve(out.replace(/\r?\n$/, ''));
-      else reject(new Error(`could not read the password (powershell exited ${code})`));
-    });
-  });
-}
-
-/** Escape a string as a single-quoted PowerShell literal. */
-function psQuote(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-/**
- * `stty -echo` around a read from the controlling terminal.
+ * Read a line with the typed characters hidden.
  *
- * `/dev/tty` rather than stdin so a piped stdin (which has no echo to disable
- * anyway) cannot break it, and `stty echo` runs in a `finally`-equivalent so a
- * failed read never leaves the terminal mute.
+ * With no TTY there is nothing to hide, so a piped stdin is read directly and
+ * `echo "$PW" | gf login` keeps working.
  */
-function promptHiddenPosix(question: string): Promise<string> {
-  const script = [
-    `printf '%s' "$1" >&2`,
-    'stty -echo </dev/tty 2>/dev/null',
-    'trap \'stty echo </dev/tty 2>/dev/null\' EXIT',
-    'IFS= read -r value </dev/tty',
-    'printf "%s" "$value"',
-  ].join('\n');
-  const child = spawn('sh', ['-c', script, 'sh', question], {
-    stdio: ['inherit', 'pipe', 'inherit'],
-  });
-  return new Promise<string>((resolve, reject) => {
-    let out = '';
-    child.stdout.on('data', (chunk: Buffer) => (out += chunk.toString('utf8')));
-    child.on('error', reject);
-    child.on('close', (code) => {
-      process.stderr.write('\n');
-      if (code === 0) resolve(out);
-      else reject(new Error(`could not read the password (sh exited ${code})`));
-    });
-  });
-}
+export async function promptHidden(question: string): Promise<string> {
+  process.stdout.write(question);
+  if (!process.stdin.isTTY) {
+    // Nothing is being shown, so there is no echo to suppress.
+    return (await readPipedLine()) ?? '';
+  }
 
-/** True when PowerShell is actually available (only used for a nicer error). */
-function hasPowerShell(): boolean {
-  if (process.platform !== 'win32') return false;
-  const probe = spawnSync('powershell.exe', ['-NoProfile', '-Command', 'exit 0'], {
-    stdio: 'ignore',
+  const rl = createInterface({
+    input: process.stdin,
+    // `terminal: true` enables raw mode, and raw mode is what suppresses the
+    // terminal driver's echo; the sink swallows readline's own redraw of the line.
+    output: sink,
+    terminal: true,
+    historySize: 0,
   });
-  return probe.status === 0;
+
+  // In raw mode Ctrl+C arrives as a keystroke instead of a signal, so without a
+  // listener it would be swallowed and the user could not abort. Put the cursor
+  // somewhere sane and exit with the conventional code.
+  const onSigint = (): never => {
+    rl.close();
+    process.stdout.write('\n');
+    process.exit(130);
+  };
+  rl.on('SIGINT', onSigint);
+
+  try {
+    return await new Promise<string>((resolve) => {
+      rl.question('', (answer) => resolve(answer));
+    });
+  } finally {
+    rl.removeListener('SIGINT', onSigint);
+    rl.close();
+    // The newline readline would have written went to the sink, and hidden input
+    // still deserves a visible line break.
+    process.stdout.write('\n');
+  }
 }
