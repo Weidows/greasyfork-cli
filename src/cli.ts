@@ -70,14 +70,14 @@ export interface Command {
 /**
  * The jar of the command currently running, so `main` can persist whatever the
  * session picked up (Rails rotates the session cookie on sign-in and on writes).
+ * Read it off the client rather than mirroring state: `Client` always owns a jar.
  */
-let activeJar: CookieJar | undefined;
+let activeClient: Client | undefined;
 let sessionTouched = false;
+/** A jar that must be used instead of whatever is on disk (`gf login --cookie`). */
+let jarOverride: CookieJar | undefined;
 
-function buildClient(
-  values: Values,
-  options: { session?: boolean; jar?: CookieJar } = {},
-): Client {
+function buildClient(values: Values, options: { session?: boolean } = {}): Client {
   const clientOptions: ClientOptions = {
     timeoutMs: numberValue(values, 'timeout', 30) * 1000,
   };
@@ -87,26 +87,32 @@ function buildClient(
   const locale = values.locale;
   if (typeof locale === 'string') clientOptions.locale = locale;
   if (booleanValue(values, 'verbose')) clientOptions.onRequest = (line) => err(line);
-  if (options.jar) {
-    // An explicit jar (a pasted session) wins over anything on disk.
-    clientOptions.jar = options.jar;
-    activeJar = options.jar;
-    sessionTouched = true;
+
+  if (jarOverride) {
+    // A pasted session wins over anything on disk.
+    clientOptions.jar = jarOverride;
   } else if (options.session) {
-    const jar = loadSession();
-    if (jar) {
-      clientOptions.jar = jar;
-      activeJar = jar;
-      sessionTouched = true;
-    }
+    const stored = loadSession();
+    if (stored) clientOptions.jar = stored;
+    // Even with nothing on disk the client gets a jar of its own, and the login
+    // page's own cookies land in it — which is what makes a FIRST-ever login
+    // work. Without that, the CSRF POST arrives with no session and gets a 422.
+    sessionTouched = true;
   }
-  return new Client(clientOptions);
+  const client = new Client(clientOptions);
+  if (options.session || jarOverride) activeClient = client;
+  return client;
 }
 
-/** Requires a stored session, with one clear message instead of a broken publish. */
+/**
+ * Requires a stored session, with one clear message instead of a broken publish.
+ *
+ * Checks the file rather than `client.jar`: a client owns a jar either way, and an
+ * empty one would sail past a presence check and fail later with a confusing 422.
+ */
 function requireSession(values: Values): Client {
   const client = buildClient(values, { session: true });
-  if (!activeJar) {
+  if (loadSession() === undefined && !jarOverride) {
     throw new Error(`not signed in — run \`gf login\` first (session file: ${sessionPath()})`);
   }
   return client;
@@ -467,8 +473,8 @@ async function cmdLogin(argv: string[]): Promise<void> {
   const otp = stringValue(values, 'otp') || undefined;
 
   const result = await login(client, email, password, otp);
-  const jar = activeJar ?? client.jar;
-  if (!jar) throw new Error('the site accepted the login but set no session cookie');
+  const jar = client.jar;
+  if (jar.size === 0) throw new Error('the site accepted the login but set no session cookie');
   saveSession(jar, result.username);
 
   out(`signed in as ${result.username || email}`);
@@ -498,7 +504,8 @@ async function loginWithCookie(values: Values, cookieArg: string): Promise<void>
 
   const jar = new CookieJar();
   jar.set(cookie);
-  const client = buildClient(values, { jar });
+  jarOverride = jar;
+  const client = buildClient(values, { session: true });
   const username = await currentUser(client);
   if (username === null) {
     throw new Error(
@@ -523,7 +530,7 @@ async function cmdLogout(argv: string[]): Promise<void> {
     // including the browser the user is logged into. Local-only is the default
     // precisely so a routine `gf logout` cannot take the browser with it.
     const client = buildClient(values, { session: true });
-    if (client.jar) {
+    if (client.jar.size > 0) {
       const url = `${client.mainSite}/${client.locale}/users/sign_out`;
       const res = await client.fetchHtml(url);
       if (!looksLikeSignIn(res.body)) {
@@ -546,7 +553,7 @@ async function cmdWhoami(argv: string[]): Promise<void> {
   const client = buildClient(values, { session: true });
   const json = booleanValue(values, 'json');
 
-  if (!activeJar) {
+  if (loadSession() === undefined && !jarOverride) {
     if (json) printJson({ signedIn: false, sessionFile: sessionPath() });
     else out('not signed in');
     return;
@@ -862,7 +869,7 @@ async function main(argv: string[]): Promise<void> {
 
   // A command that carried a session may have rotated the cookie (Rails issues a
   // new one on sign-in and on writes), so persist whatever the jar now holds.
-  if (sessionTouched && activeJar) saveSession(activeJar);
+  if (sessionTouched && activeClient) saveSession(activeClient.jar);
 }
 
 main(process.argv.slice(2)).catch((e: unknown) => {

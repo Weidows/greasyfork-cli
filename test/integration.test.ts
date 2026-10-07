@@ -23,7 +23,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '../src/client.js';
 import { CookieJar } from '../src/cookie.js';
 import { inspectSource, publish, PublishError } from '../src/publish.js';
-import { clearSession, currentUser, loadSession, login, saveSession } from '../src/session.js';
+import { clearSession, currentUser, loadSession, login, saveSession, SESSION_COOKIE_NAME } from '../src/session.js';
 
 const SCRIPT = `// ==UserScript==
 // @name         Fixture Script
@@ -48,6 +48,10 @@ const seen: Recorded[] = [];
 
 const SCRIPT_PAGE = '/en/scripts/98765-fixture-script';
 const FRESH_COOKIE = '_greasyfork_session=fresh; path=/; httponly';
+/** The cookie Rails plants on the sign-in GET, which the POST must echo back. */
+const SESSION_COOKIE = SESSION_COOKIE_NAME;
+/** Makes each sign-in GET hand out a distinct session, as Rails does. */
+let signInSessionCounter = 0;
 
 const NAV =
   '<div id="site-nav"><div id="nav-user-info">' +
@@ -59,8 +63,11 @@ const NAV =
  * The sign-in page, which deliberately carries TWO forms with different tokens.
  * Only the token belonging to the form actually submitted is valid, so picking
  * the wrong one is a real, silent CSRF failure.
+ *
+ * `sid` is mirrored into the form's action so the POST can be checked against the
+ * cookie — see `SIGN_IN_SESSION` below for why that matters.
  */
-function signInPage(flash = ''): string {
+function signInPage(flash = '', sid = ''): string {
   return `<!DOCTYPE html><html><head>
 <meta name="csrf-param" content="authenticity_token" />
 <meta name="csrf-token" content="META_TOKEN" />
@@ -68,7 +75,7 @@ function signInPage(flash = ''): string {
 <form class="language-selector" action="/users/sign_in">
   <input type="hidden" name="authenticity_token" value="LOCALE_FORM_TOKEN" />
 </form>
-<form class="new_user" id="new_user" action="/en/users/sign_in" method="post">
+<form class="new_user" id="new_user" action="/en/users/sign_in?sid=${sid}" method="post">
   <input type="hidden" name="authenticity_token" value="LOGIN_FORM_TOKEN" />
   <input autocomplete="email" type="email" name="user[email]" id="user_email" />
   <input type="password" name="user[password]" id="user_password" />
@@ -130,6 +137,15 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(page);
     };
+    /** Any status, with headers — needed to reproduce a bare 422, not just 200s. */
+    const respond = (
+      status: number,
+      headers: Record<string, string | string[]>,
+      page: string,
+    ): void => {
+      res.writeHead(status, headers);
+      res.end(page);
+    };
     const redirect = (to: string, setCookie?: string[]): void => {
       const headers: Record<string, string | string[]> = { Location: to };
       if (setCookie) headers['Set-Cookie'] = setCookie;
@@ -138,9 +154,28 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
     };
 
     // The sign-in form itself is never protected, or nobody could ever log in.
-    if (url.startsWith('/en/users/sign_in') && method === 'GET') return html(signInPage());
+    if (url.startsWith('/en/users/sign_in') && method === 'GET') {
+      // Hand out a session exactly as Rails does. Binding the CSRF token to it is
+      // the whole point: the real site answers a POST that arrives WITHOUT this
+      // cookie with a bare 422 and an EMPTY body, and that is indistinguishable
+      // from a wrong password unless the fake server reproduces it. Every other
+      // test here pre-loads a jar, so this is the only path that can catch a
+      // first-ever login dropping the login page's cookies.
+      const sid = `s${++signInSessionCounter}`;
+      return respond(
+        200,
+        { 'Content-Type': 'text/html; charset=utf-8', 'Set-Cookie': [`${SESSION_COOKIE}=${sid}; path=/; httponly`] },
+        signInPage('', sid),
+      );
+    }
 
     if (url.startsWith('/en/users/sign_in') && method === 'POST') {
+      // CSRF/session check, like Rails: the token is only valid with the session
+      // that issued it.
+      const sid = new URL(url, 'http://x').searchParams.get('sid') ?? '';
+      if (!sid || !cookie.includes(`${SESSION_COOKIE}=${sid}`)) {
+        return respond(422, { 'Content-Type': 'text/html; charset=utf-8' }, '');
+      }
       // A TOTP code was supplied, or the password is simply right.
       if (body.includes('user%5Botp_attempt%5D')) return redirect('/en/', [FRESH_COOKIE]);
       if (body.includes('user%5Bemail%5D=good%40example.invalid')) {
@@ -325,6 +360,35 @@ describe('login', () => {
     expect(result.usedOtp).toBe(true);
     expect(seen.find((r) => r.method === 'POST')!.body).toContain('user%5Botp_attempt%5D=123456');
     expect(jar.header()).toContain('_greasyfork_session=fresh');
+  });
+
+  it('signs in on a first-ever attempt, with no session on disk', async () => {
+    // The bug this test exists for: with no stored session the client used to be
+    // built WITHOUT a cookie jar, so the login page's own Set-Cookie was dropped
+    // and the POST went out bare. Rails answers that with a 422 and an EMPTY body,
+    // which reads as "no error text" and looks like a wrong password.
+    //
+    // No jar is passed on purpose — that is what `buildClient` does before the
+    // first login, and every other test here pre-loads one, which is exactly why
+    // this path was missed.
+    seen.length = 0;
+    const client = new Client({ mainSite: base, apiHost: base, locale: 'en', noProxy: true });
+
+    const result = await login(client, 'good@example.invalid', 'pw');
+    expect(result.username).toBe('TestUser');
+
+    // The session handed out by the GET has to come back on the POST, or the CSRF
+    // token is not valid and the site answers 422.
+    const post = seen.find((r) => r.method === 'POST')!;
+    const sid = new URL(post.url, base).searchParams.get('sid')!;
+    expect(sid).not.toBe('');
+    expect(post.cookie).toContain(`${SESSION_COOKIE}=${sid}`);
+
+    // And after a successful sign-in the session is ROTATED (Rails' session
+    // fixation protection), so the jar must hold the new one — asserting the old
+    // value here would silently pass a client that never stored the new cookie.
+    expect(client.jar.header()).toContain('_greasyfork_session=fresh');
+    expect(client.jar.header()).not.toContain(`${SESSION_COOKIE}=${sid}`);
   });
 
   it('reports "not signed in" for an empty jar', async () => {

@@ -122,18 +122,25 @@ const sink = new Writable({
 });
 
 /**
- * Read a line with the typed characters hidden.
+ * Read a line with the typed characters shown as `*`.
  *
- * With no TTY there is nothing to hide, so a piped stdin is read directly and
+ * Not zero feedback: the user must be able to see that their keystrokes landed.
+ * Nothing sensitive is printed — a fixed-width mask per character, never the
+ * character itself — and Backspace shrinks the mask so a correction is visible.
+ * (Fully hidden is safer against shoulder-surfing but is worse UX and does not
+ * tell the user whether the keyboard, paste or IME actually worked.)
+ *
+ * With no TTY there is nothing to mask, so a piped stdin is read directly and
  * `echo "$PW" | gf login` keeps working.
  */
 export async function promptHidden(question: string): Promise<string> {
-  process.stdout.write(question);
   if (!process.stdin.isTTY) {
-    // Nothing is being shown, so there is no echo to suppress.
+    process.stdout.write(question);
     return (await readPipedLine()) ?? '';
   }
 
+  process.stdout.write(question);
+  let masked = 0;
   const rl = createInterface({
     input: process.stdin,
     // `terminal: true` enables raw mode, and raw mode is what suppresses the
@@ -142,6 +149,25 @@ export async function promptHidden(question: string): Promise<string> {
     terminal: true,
     historySize: 0,
   });
+
+  // Re-render the mask ourselves: the value never reaches the output stream, only
+  // one `*` per character typed.
+  const onKeypress = (_str: string, key: { name?: string; ctrl?: boolean } | undefined): void => {
+    if (!key) return;
+    if (key.name === 'backspace') {
+      if (masked > 0) {
+        masked--;
+        process.stdout.write('\b \b');
+      }
+      return;
+    }
+    if (key.name === 'return' || key.name === 'enter') return;
+    // Arrow keys, Tab, etc. move no characters.
+    if (STRINGS_NOTHING_SPECIAL.has(key.name)) return;
+    masked++;
+    process.stdout.write('*');
+  };
+  process.stdin.on('keypress', onKeypress);
 
   // In raw mode Ctrl+C arrives as a keystroke instead of a signal, so without a
   // listener it would be swallowed and the user could not abort. Put the cursor
@@ -158,10 +184,47 @@ export async function promptHidden(question: string): Promise<string> {
       rl.question('', (answer) => resolve(answer));
     });
   } finally {
+    process.stdin.removeListener('keypress', onKeypress);
     rl.removeListener('SIGINT', onSigint);
     rl.close();
-    // The newline readline would have written went to the sink, and hidden input
-    // still deserves a visible line break.
+    // The newline readline would have written went to the sink, and the masked
+    // input still deserves a visible line break.
     process.stdout.write('\n');
   }
 }
+
+/** Key names that produce no character, so they must not grow the mask. */
+const STRINGS_NOTHING_SPECIAL = new Set<string | undefined>([
+  'up',
+  'down',
+  'left',
+  'right',
+  'home',
+  'end',
+  'pageup',
+  'pagedown',
+  'tab',
+  'escape',
+  'insert',
+  'delete',
+  'shift',
+  'ctrl',
+  'alt',
+  'meta',
+  'capslock',
+  'numlock',
+  'scrolllock',
+  'pause',
+  'f1',
+  'f2',
+  'f3',
+  'f4',
+  'f5',
+  'f6',
+  'f7',
+  'f8',
+  'f9',
+  'f10',
+  'f11',
+  'f12',
+]);

@@ -92,7 +92,7 @@ gf sites -n 20                    # scripts per site
 gf open 405130 --launch           # open the script page
 gf check ./scripts                # check local scripts for updates
 
-gf login                          # sign in (password from a no-echo prompt, or GF_PASSWORD)
+gf login                          # sign in (password shown as *** while typing)
 gf login --cookie -               # or paste a session cookie from your browser (stdin)
 gf whoami                         # is the stored session still valid?
 gf publish my.user.js             # publish or update a script
@@ -148,14 +148,15 @@ To try it safely: use a throwaway account and an `unlisted` script. This writes 
 There are two ways to sign in, and for some accounts only the second one works.
 
 **Password.** Never an argument — that would land in shell history and, on Windows, in the process
-list. It comes from `GF_PASSWORD`, or a no-echo prompt: `readline` with raw mode, which is what
-turns off the terminal driver's own echo. (PowerShell `Read-Host -AsSecureString` was tried first
-and does not work when spawned from Node — with `-NonInteractive` PowerShell refuses to prompt, and
-without it the child still has no console to read from, so it exits non-zero having never asked.
-Measured both ways.)
+list. It comes from `GF_PASSWORD`, or a prompt that masks what you type as `*` (so you can see the
+keystrokes landed; Backspace shrinks the mask). It is `readline` in raw mode writing to a sink,
+which is what keeps the value out of the terminal while still counting characters. (PowerShell
+`Read-Host -AsSecureString` was tried first and does not work when spawned from Node — with
+`-NonInteractive` PowerShell refuses to prompt, and without it the child still has no console to
+read from, so it exits non-zero having never asked. Measured both ways.)
 
 ```bash
-gf login --email me@example.com      # prompts for the password with echo off
+gf login --email me@example.com      # prompts for the password, masked as ***
 gf login --otp 123456                # with an account that has 2FA enabled
 GF_PASSWORD=… gf login               # for scripts; beware the shell history
 ```

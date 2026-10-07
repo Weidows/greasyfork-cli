@@ -216,7 +216,14 @@ async function verifyAfterLogin(client: Client, res: HttpResponse): Promise<stri
   return user;
 }
 
-/** The most specific diagnosis available for a rejected sign-in. */
+/**
+ * The most specific diagnosis available for a rejected sign-in.
+ *
+ * The order matters: the site's own flash text is the best answer, and a CSRF
+ * rejection is the confusing one, so it is named explicitly instead of being left
+ * to fall through to "check the e-mail and password" — which sends the user
+ * hunting for a wrong password that was never wrong.
+ */
 function explainSignInFailure(res: HttpResponse): string {
   const html = res.body;
   const flash = findFlash(html);
@@ -224,10 +231,22 @@ function explainSignInFailure(res: HttpResponse): string {
   if (/invalid|incorrect|not found/i.test(text)) return `sign-in failed: ${text}`;
   if (text) return `sign-in failed: ${text}`;
   if (html.includes('two_fa') || hasOtpField(html)) {
-    return 'sign-in needs a two-factor code — re-run with --otp <code>';
+    return 'sign-in needed a two-factor code — re-run with --otp <code>';
   }
   if (html.includes('not confirmed') || /confirm your/i.test(html)) {
     return 'sign-in blocked: the account e-mail has not been confirmed yet — confirm it on the site first';
+  }
+  // A bare 422 with an empty body is Rails rejecting the CSRF token, which happens
+  // when the POST does not carry the session the login page handed out.
+  if (res.status === 422 && html.trim().length === 0) {
+    return (
+      'the site rejected the sign-in POST (422, empty body) — the session cookie from the ' +
+      'login page did not come back with it. Re-run with -v to see the requests; if it ' +
+      'persists, `gf login --cookie -` with a session copied from a browser works around it'
+    );
+  }
+  if (html.trim().length === 0) {
+    return `the site answered the sign-in with an empty body (HTTP ${res.status})`;
   }
   return 'sign-in failed (no error text in the response) — check the e-mail and password';
 }

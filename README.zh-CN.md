@@ -80,7 +80,7 @@ gf sites -n 20                    # 各站点脚本数量排行
 gf open 405130 --launch           # 打开脚本页
 gf check ./scripts                # 检查本地脚本是否过时
 
-gf login                          # 登录（密码走不回显的提示，或 GF_PASSWORD）
+gf login                          # 登录（输入密码时以 *** 回显）
 gf login --cookie -               # 或从浏览器粘会话 cookie（读 stdin）
 gf whoami                         # 当前存的会话还有效吗？
 gf publish my.user.js             # 发布或更新脚本
@@ -129,10 +129,10 @@ gf publish my.user.js --force             # 确认站点的警告并重提
 
 想安全试手：用一次性小号 + `unlisted` 脚本。这是对真实账号的真实写入。
 
-密码**不作为命令行参数**（会进 shell history，且在 Windows 上还会出现在进程列表里）。它来自 `GF_PASSWORD` 环境变量，或隐藏回显的交互式提示 —— 实现是 `readline` 的 raw mode，靠它关掉终端驱动自身的回显。（最初用的是 PowerShell `Read-Host -AsSecureString`，但它**在 Node 派生的子进程里根本不可用**：带 `-NonInteractive` 时 PowerShell 拒绝弹提示，去掉该标志后子进程又拿不到控制台，于是没问密码就非零退出。两种方式都实测过。）
+密码**不作为命令行参数**（会进 shell history，且在 Windows 上还会出现在进程列表里）。它来自 `GF_PASSWORD` 环境变量，或一个把你输入的字符显示成 `*` 的提示（这样你能看到按键确实进去了，退格会缩短掩码）。实现是 `readline` 的 raw mode 配一个丢弃写入的 sink —— 值不进终端，但字符数照数。（最初用的是 PowerShell `Read-Host -AsSecureString`，但它**在 Node 派生的子进程里根本不可用**：带 `-NonInteractive` 时 PowerShell 拒绝弹提示，去掉该标志后子进程又拿不到控制台，于是没问密码就非零退出。两种方式都实测过。）
 
 ```bash
-gf login --email me@example.com      # 交互式，密码不回显
+gf login --email me@example.com      # 交互式，密码以 *** 回显
 gf login --otp 123456                # 账号开了 2FA 时
 GF_PASSWORD=… gf login               # 给脚本用；注意 shell history
 ```

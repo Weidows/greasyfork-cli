@@ -26,7 +26,7 @@ import {
   type HttpResponse,
 } from './http.js';
 import { encodeForm, type FormFields } from './form.js';
-import type { CookieJar } from './cookie.js';
+import { CookieJar } from './cookie.js';
 import { resolveProxy } from './proxy.js';
 import {
   SORT_KEYS,
@@ -77,7 +77,8 @@ export interface ClientOptions {
   mainSite?: string;
   /**
    * Session cookies. Passed in rather than read from disk here, so the library
-   * stays free of filesystem assumptions — the CLI loads and saves the jar.
+   * stays free of filesystem assumptions — the CLI loads and saves the jar. When
+   * omitted the client still keeps a jar of its own (see `Client#jar`).
    */
   jar?: CookieJar;
 }
@@ -92,8 +93,17 @@ export class Client {
   private readonly noProxy: boolean;
   private readonly onRequest: ((line: string) => void) | undefined;
   private proxyResolved = false;
-  /** Session cookies, when the caller supplied a jar. */
-  readonly jar: CookieJar | undefined;
+  /**
+   * Session cookies. Always present, even when the caller passed none.
+   *
+   * It must not be optional: a first-ever `gf login` has nothing on disk, and if
+   * the jar were absent the login page's own `Set-Cookie` would be *discarded* —
+   * so the CSRF POST would arrive without the session those cookies establish,
+   * and Rails answers it with a bare **422 whose body is empty**. That is exactly
+   * the "no error text in the response" failure, and it looks like a wrong
+   * password when it is really a dropped cookie.
+   */
+  readonly jar: CookieJar;
 
   constructor(options: ClientOptions = {}) {
     this.apiHost = options.apiHost ?? API_HOST;
@@ -102,7 +112,7 @@ export class Client {
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.noProxy = options.noProxy ?? false;
     this.onRequest = options.onRequest;
-    this.jar = options.jar;
+    this.jar = options.jar ?? new CookieJar();
     if (options.proxy) this.proxy = options.proxy;
   }
 
