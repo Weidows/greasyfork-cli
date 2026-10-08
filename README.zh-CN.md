@@ -83,8 +83,11 @@ gf check ./scripts                # 检查本地脚本是否过时
 gf login                          # 登录（输入密码时以 *** 回显）
 gf login --cookie -               # 或从浏览器粘会话 cookie（读 stdin）
 gf whoami                         # 当前存的会话还有效吗？
+gf list                           # 我名下的全部脚本（含未公开的）
 gf publish my.user.js             # 发布或更新脚本
 gf publish my.user.js --dry-run   # 只抓表单、拼载荷，不提交任何东西
+gf sync 405130                    # 查看某个脚本的代码同步设置
+gf sync 405130 --url … --now      # 改到新地址并立刻拉取一次
 gf logout                         # 只清本地会话（不动浏览器）
 gf logout --server                # 连服务器一起登出，浏览器也会掉线
 ```
@@ -105,7 +108,9 @@ gf logout --server                # 连服务器一起登出，浏览器也会�
 | `login` | | 登录并保存会话 cookie |
 | `logout` | | 清除已保存的会话 |
 | `whoami` | | 显示当前登录账号 |
+| `list` | `ls` | 我名下的全部脚本（含未公开、已删除的） |
 | `publish <文件>` | `push` | 发布新脚本，或更新已有脚本 |
+| `sync <脚本>` | | 查看或修改脚本的代码同步设置 |
 
 ### 发布
 
@@ -128,6 +133,35 @@ gf publish my.user.js --force             # 确认站点的警告并重提
 站点的警告（"version not incremented"、"no namespace" 等）**只报告、不吞掉** —— 那是作者本人该做的确认；只有 `--force` 会勾选它们，别的地方都不会。
 
 想安全试手：用一次性小号 + `unlisted` 脚本。这是对真实账号的真实写入。
+
+### 代码同步（sync）
+
+Greasy Fork 可以从一个 URL 拉取脚本体 —— 比如 GitHub 上的 raw 文件 —— 而不是把你上传的内容当作唯一真源。它会按周期重新拉取，**所以往仓库 push 就等于更新线上脚本**。
+
+**绑定同步源是「创建时」的设置。** 发布表单只在**新建**路径读 `import_url`/`sync_type`，更新路径两者都不看。所以要在首次发布时就绑好：
+
+```bash
+gf publish my.user.js \
+  --sync-url https://raw.githubusercontent.com/你/仓库/main/my.user.js \
+  --sync-type automatic
+```
+
+`--sync-type` 可选 `automatic`（站点自行定期拉取）、`manual`（只在你要时才拉）、`webhook`（你仓库 push 时拉）。默认 `automatic`；与 `--id` 同时给出会被**拒绝**，而不是接受后静默失效。
+
+对**已存在**的脚本，用 `gf sync` —— 它操作的就是脚本设置页提交的那个端点：
+
+```bash
+gf sync 405130                     # 看当前绑的是什么（只读，不改任何东西）
+gf sync 405130 --type manual       # 换模式，地址不动
+gf sync 405130 --url https://…     # 换目标地址
+gf sync 405130 --url https://… --now   # 换地址并立刻拉取一次
+gf sync 405130 --stop              # 关闭同步；当前代码保留
+gf sync 405130 --dry-run           # 只打印将提交的内容，不发请求
+```
+
+`--now` 就是站点上的「更新设置并立即同步」：你仓库里的当前代码会立刻替换线上版本，不用等下一次计划拉取。
+
+一个值得知道的限制：设置表单只提供站点**对该脚本允许**的模式，`webhook` 并不总在其中。请求一个表单上没有的模式会被明确拒绝，而不是接受后什么都不做 —— 让你当场知道，而不是事后纳闷为什么没生效。
 
 密码**不作为命令行参数**（会进 shell history，且在 Windows 上还会出现在进程列表里）。它来自 `GF_PASSWORD` 环境变量，或一个把你输入的字符显示成 `*` 的提示（这样你能看到按键确实进去了，退格会缩短掩码）。实现是 `readline` 的 raw mode 配一个丢弃写入的 sink —— 值不进终端，但字符数照数。（最初用的是 PowerShell `Read-Host -AsSecureString`，但它**在 Node 派生的子进程里根本不可用**：带 `-NonInteractive` 时 PowerShell 拒绝弹提示，去掉该标志后子进程又拿不到控制台，于是没问密码就非零退出。两种方式都实测过。）
 

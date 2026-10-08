@@ -214,10 +214,21 @@ export function pageSummary(html: string): string {
 /**
  * The title of the script page a successful publish redirects to, e.g.
  * "Foo Bar". Returns '' when the page does not look like a script page.
+ *
+ * Reads `<title>`, not the first `<h1>`: on a script page every `<h1>` is the
+ * site's own header ("Greasy Fork"), so an h1 grab reported the *site* name as the
+ * script name. The script page sets its title from `@script.name`, so `<title>` is
+ * the reliable marker. Any trailing "- <site>" suffix is dropped for safety on
+ * pages that do append it.
  */
 export function findScriptName(html: string): string {
-  const m = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
-  return m ? stripTags(m[1] ?? '') : '';
+  const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
+  if (title) {
+    const text = stripTags(title[1] ?? '').replace(/\s*[-–—|]\s*Greasy Fork\s*$/i, '');
+    if (text) return text;
+  }
+  const h1 = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
+  return h1 ? stripTags(h1[1] ?? '') : '';
 }
 
 /** Collapse a fragment to plain, single-spaced text. */

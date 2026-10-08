@@ -23,11 +23,13 @@ import { readFileSync, statSync } from 'node:fs';
 import { basename } from 'node:path';
 
 import type { Client } from './client.js';
+import type { HttpResponse } from './http.js';
 import {
   buildPublishPayload,
   overridesFrom,
   type FormFields,
   type ScriptTypeName,
+  type SyncTypeName,
 } from './form.js';
 import {
   findAuthenticityToken,
@@ -57,6 +59,14 @@ export interface PublishOptions {
   scriptId?: number;
   /** Only used when creating. */
   scriptType?: ScriptTypeName;
+  /**
+   * Source URL for code syncing. **Create-only**: the update route does not read
+   * `import_url`, so a value passed with a `scriptId` is silently useless — the
+   * CLI rejects that combination rather than pretending it worked.
+   */
+  syncUrl?: string;
+  /** Defaults to `automatic` when a `syncUrl` is given. */
+  syncType?: SyncTypeName;
   changelog?: string;
   additionalInfo?: string;
   /** Confirm pending warnings and submit again. */
@@ -245,7 +255,18 @@ export async function publish(
     buildPublishPayload({
       code: source,
       token,
-      ...(forUpdate ? {} : { scriptType: options.scriptType ?? 'public', language: info.kind }),
+      ...(forUpdate
+        ? {}
+        : {
+            scriptType: options.scriptType ?? 'public',
+            language: info.kind,
+            // Syncing rides along with the other create-only fields because the
+            // update route never reads `import_url`/`sync_type`. Set it at
+            // creation or not at all — afterwards it is a browser-only setting.
+            ...(options.syncUrl
+              ? { syncUrl: options.syncUrl, syncType: options.syncType ?? 'automatic' }
+              : {}),
+          }),
       ...(options.changelog ? { changelog: options.changelog } : {}),
       ...(options.additionalInfo ? { additionalInfo: options.additionalInfo } : {}),
       overrides: confirmed,
@@ -285,7 +306,7 @@ export async function publish(
     site = scriptPageOf(res.finalUrl);
   }
 
-  if (!site) throw refusal(res.body, info.name);
+  if (!site) throw refusal(res, info.name);
 
   return {
     name: findScriptName(res.body) || info.name,
@@ -303,8 +324,24 @@ export async function publish(
  * field blank, and sending it would override what the file actually says.
  */
 
-/** Turn a re-rendered form into a readable error. */
-function refusal(html: string, name: string): PublishError {
+/**
+ * Turn a rejected response into a readable error.
+ *
+ * Takes the whole response rather than just the body: a 5xx is a failure on the
+ * site's side, and reporting it as "the form was re-rendered" sends the reader
+ * hunting for a validation problem that does not exist. Measured: posting without
+ * `script_version[attachments][]` answered **500 with an empty body**, which the
+ * old signature reported as a re-rendered form.
+ */
+function refusal(res: HttpResponse, name: string): PublishError {
+  const html = res.body;
+  if (res.status >= 500) {
+    return new PublishError(
+      `${name} was not published — the site answered HTTP ${res.status} with an empty body. ` +
+        'That is a Greasy Fork-side error, not a validation failure, so the request itself may ' +
+        'be missing a field the server assumes is present; re-run with -v and check the payload.',
+    );
+  }
   const problems = findValidationErrors(html);
   const warnings = overridesFrom(html);
   const flash = findFlash(html);

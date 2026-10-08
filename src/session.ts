@@ -230,6 +230,137 @@ function isProtectedPage(html: string): boolean {
   return /webhook|Source Syncing|sign-out-link/i.test(html);
 }
 
+/** Who the stored session belongs to, as the site identifies them. */
+export interface Identity {
+  name: string;
+  /** Numeric user id. */
+  id: number;
+  /**
+   * The `id-slug` form the profile JSON wants (`123456-someuser`).
+   *
+   * Needed because the slug is required: `GET /users/<name>.json` answers **404**
+   * for the display name alone, so a command like `gf list` cannot be built on
+   * `gf user <name>` — it has to resolve the id first, from the nav link.
+   */
+  handle: string;
+  /** Absolute profile URL. */
+  url: string;
+}
+
+/**
+ * Pull the account id, slug and display name out of a signed-in page's nav.
+ *
+ * The nav renders
+ * `<span class="user-profile-link"><a href="/en/users/123456-someuser">Name</a></span>`.
+ * The nav block is preferred because it is unambiguously the signed-in user, but
+ * any `/users/<digits>` link is accepted as a fallback: locale switches point at
+ * `/users/<page>` and the profile link is the only one carrying digits, so a
+ * markup reshuffle that renames the wrapper class still parses instead of
+ * silently returning null — which would take `gf list` and `gf sync` down with it.
+ *
+ * Pure and offline-testable: it takes HTML, not a client.
+ */
+export function parseIdentityLink(html: string): (Omit<Identity, 'url'> & { href: string }) | null {
+  const candidates: Array<[string, string]> = [];
+  const nav =
+    /class=["']user-profile-link["'][^>]*>\s*<a[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i.exec(
+      html,
+    );
+  if (nav?.[1]) candidates.push([nav[1], nav[2] ?? '']);
+  for (const m of html.matchAll(
+    /<a[^>]*href=["']([^"']*\/users\/[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi,
+  )) {
+    if (m[1]) candidates.push([m[1], m[2] ?? '']);
+  }
+
+  for (const [href, inner] of candidates) {
+    const tail = href.slice(href.lastIndexOf('/') + 1);
+    // `123456-someuser` or a bare `123456`. Anything else is a page, not a profile.
+    if (!/^\d+(?:-|$)/.test(tail)) continue;
+    let handle = tail;
+    try {
+      handle = decodeURIComponent(tail);
+    } catch {
+      // A hand-mangled href is not worth failing over; the raw tail may still work.
+    }
+    return { id: Number.parseInt(tail, 10), handle, name: stripTags(inner), href };
+  }
+  return null;
+}
+
+/**
+ * Resolve the signed-in account. Returns null when the session is not in fact
+ * signed in, so callers can say so instead of fetching a 404 profile.
+ */
+export async function currentUserIdentity(client: Client): Promise<Identity | null> {
+  const res = await client.fetchHtml(`${client.mainSite}/${client.locale}/users/webhook-info`);
+  if (looksLikeSignIn(res.body)) return null;
+  const link = parseIdentityLink(res.body);
+  if (!link) return null;
+  const { href, ...rest } = link;
+  return { ...rest, url: href.startsWith('http') ? href : `${client.mainSite}${href}` };
+}
+
+/** One of the signed-in account's own scripts, as the profile JSON describes it. */
+export interface OwnScript {
+  id: number;
+  name: string;
+  version: string;
+  /** Absolute script page. */
+  url: string;
+  /** Raw code URL, on `update.greasyfork.org`. */
+  codeUrl: string;
+  /** Soft-deleted scripts still appear in the owner's own listing. */
+  deleted: boolean;
+  /** When the code last changed — the useful "updated" column. */
+  updatedAt: string;
+  createdAt: string;
+  locale: string;
+  dailyInstalls: number;
+  totalInstalls: number;
+}
+
+/**
+ * Every script the signed-in account owns, newest id first.
+ *
+ * Uses the profile JSON rather than the search API: `users#show` calls
+ * `api_as_json(with_private_scripts: @same_user)`, and the owner's own request takes
+ * the `as_json(include: :scripts)` branch, which is the **unfiltered** association.
+ * That is what makes this list complete — it can include unlisted, library and
+ * soft-deleted scripts a public profile hides. (Measured: for an account with only
+ * public scripts the authenticated and anonymous responses had identical key sets,
+ * so the extra reach is invisible until such a script exists.)
+ *
+ * Returns null when not signed in.
+ */
+export async function listOwnScripts(
+  client: Client,
+): Promise<{ identity: Identity; scripts: OwnScript[] } | null> {
+  const identity = await currentUserIdentity(client);
+  if (!identity) return null;
+
+  const res = await client.fetchHtml(
+    `${client.mainSite}/${client.locale}/users/${identity.handle}.json`,
+  );
+  const data = JSON.parse(res.body) as { scripts?: Array<Record<string, unknown>> };
+
+  const scripts: OwnScript[] = (data.scripts ?? []).map((s) => ({
+    id: Number(s.id),
+    name: String(s.name ?? ''),
+    version: String(s.version ?? ''),
+    url: String(s.url ?? ''),
+    codeUrl: String(s.code_url ?? ''),
+    deleted: s.deleted === true,
+    updatedAt: String(s.code_updated_at ?? ''),
+    createdAt: String(s.created_at ?? ''),
+    locale: String(s.locale ?? ''),
+    dailyInstalls: Number(s.daily_installs ?? 0),
+    totalInstalls: Number(s.total_installs ?? 0),
+  }));
+  scripts.sort((a, b) => b.id - a.id);
+  return { identity, scripts };
+}
+
 /**
  * Sign in. Returns once the session cookie is stored.
  *

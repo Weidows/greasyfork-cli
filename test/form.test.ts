@@ -108,6 +108,64 @@ describe('buildPublishPayload', () => {
     const names = buildPublishPayload({ code, token: 'T' }).map(([k]) => k);
     expect(names.some((n) => n.endsWith('_override]') || n.endsWith('_confirmation]'))).toBe(false);
   });
+
+  it('always sends an empty attachments field', () => {
+    // Not cosmetic. `create` runs `svp['attachments'].reject { … }` unconditionally,
+    // and `expect(script_version: [… { attachments: [] }])` yields **nil** when the
+    // key is absent → `nil.reject` → 500 with an empty body, which is not a
+    // validation error and so cannot be reported as one. A browser never hits this
+    // because a `multiple` file input submits an empty entry even with no file.
+    // Measured: adding the field turned a 500 into an ordinary validation response.
+    const fields = buildPublishPayload({ code, token: 'T' });
+    expect(fields).toContainEqual(['script_version[attachments][]', '']);
+  });
+
+  it('keeps the attachments field even on an update', () => {
+    // The update route builds the same params object, so the same nil crash applies.
+    const names = buildPublishPayload({ code, token: 'T', changelog: 'x' }).map(([k]) => k);
+    expect(names).toContain('script_version[attachments][]');
+  });
+});
+
+describe('buildPublishPayload: code syncing (create-only)', () => {
+  const code = '/** x */';
+  const url = 'https://raw.githubusercontent.com/someone/some-repo/main/x.user.js';
+
+  it('sends import_url and sync_type as TOP-LEVEL fields', () => {
+    const fields = buildPublishPayload({ code, token: 'T', syncUrl: url, syncType: 'automatic' });
+    // Not `script_version[…]`: the controller reads `params[:import_url]` and
+    // `params[:sync_type]` directly, and only while creating.
+    expect(fields).toContainEqual(['import_url', url]);
+    expect(fields).toContainEqual(['sync_type', 'automatic']);
+  });
+
+  it('defaults the sync type to automatic when only a url is given', () => {
+    const fields = buildPublishPayload({ code, token: 'T', syncUrl: url });
+    expect(fields).toContainEqual(['sync_type', 'automatic']);
+  });
+
+  it('never sends sync_type without a url — the site reads both inside one `if`', () => {
+    // `sync_type` outside the `if params['import_url']` branch is dead input, so
+    // sending it alone would look like it worked while doing nothing.
+    const names = buildPublishPayload({ code, token: 'T', syncType: 'webhook' }).map(([k]) => k);
+    expect(names).not.toContain('sync_type');
+    expect(names).not.toContain('import_url');
+  });
+
+  it('sends no sync fields when not asked to', () => {
+    const names = buildPublishPayload({ code, token: 'T' }).map(([k]) => k);
+    expect(names).not.toContain('import_url');
+    expect(names).not.toContain('sync_type');
+  });
+
+  it('accepts each documented mode by name, not by number', () => {
+    // The controller's own fallback is the STRING 'manual', and a Rails enum
+    // setter takes a name — so the wire value must be the word.
+    for (const mode of ['manual', 'automatic', 'webhook'] as const) {
+      const fields = buildPublishPayload({ code, token: 'T', syncUrl: url, syncType: mode });
+      expect(fields).toContainEqual(['sync_type', mode]);
+    }
+  });
 });
 
 describe('overridesFrom', () => {

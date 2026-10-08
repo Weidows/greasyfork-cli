@@ -95,8 +95,11 @@ gf check ./scripts                # check local scripts for updates
 gf login                          # sign in (password shown as *** while typing)
 gf login --cookie -               # or paste a session cookie from your browser (stdin)
 gf whoami                         # is the stored session still valid?
+gf list                           # every script you own, unlisted ones included
 gf publish my.user.js             # publish or update a script
 gf publish my.user.js --dry-run   # build the payload and stop, submitting nothing
+gf sync 405130                    # show a script's code syncing
+gf sync 405130 --url … --now      # point it at a new URL and pull immediately
 gf logout                         # forget the local session (browser untouched)
 gf logout --server                # sign out everywhere, browser included
 ```
@@ -117,7 +120,9 @@ gf logout --server                # sign out everywhere, browser included
 | `login` | | Sign in and store the session cookie |
 | `logout` | | Forget the stored session |
 | `whoami` | | Show the signed-in account |
+| `list` | `ls` | Every script you own, unlisted and deleted ones included |
 | `publish <file>` | `push` | Publish a new script, or update an existing one |
+| `sync <script>` | | Show or change a script's code syncing |
 
 ### Publishing
 
@@ -144,6 +149,44 @@ Warnings ("version not incremented", "no namespace", …) are **reported, not sw
 the author's own confirmations to make; `--force` ticks them, and nothing else does.
 
 To try it safely: use a throwaway account and an `unlisted` script. This writes to a real account.
+
+### Code syncing
+
+Greasy Fork can pull a script's code from a URL — a raw file on GitHub, say — instead of treating
+whatever you uploaded as the source of truth. It re-pulls on a schedule, so pushing to the repo is
+how the published script gets updated.
+
+**Binding a source is a create-time setting.** The publish form reads `import_url`/`sync_type` only
+on the create path; the update route ignores both. So bind it on the first publish:
+
+```bash
+gf publish my.user.js \
+  --sync-url https://raw.githubusercontent.com/you/repo/main/my.user.js \
+  --sync-type automatic
+```
+
+`--sync-type` is `automatic` (the site re-pulls on its own schedule), `manual` (only when you ask),
+or `webhook` (re-pull when your repository pushes). It defaults to `automatic` and is refused
+alongside `--id`, rather than accepted and silently ignored.
+
+For a script that already exists, use `gf sync` — the same settings, the same endpoint the script's
+own settings page posts to:
+
+```bash
+gf sync 405130                     # show what is bound now (read-only, changes nothing)
+gf sync 405130 --type manual       # change the mode, keep the URL
+gf sync 405130 --url https://…     # change the target
+gf sync 405130 --url https://… --now   # change it and pull the code straight away
+gf sync 405130 --stop              # stop syncing; the current code stays
+gf sync 405130 --dry-run           # print what would be sent, submit nothing
+```
+
+`--now` is the site's "update and sync" button: your repository's current code replaces the
+published version immediately, without waiting for the next scheduled pull.
+
+One caveat worth knowing: the settings form offers only the modes the site allows for that script,
+and `webhook` is not always among them. Asking for a mode the form does not offer is refused rather
+than accepted-and-ignored, so you find out instead of wondering why nothing changed.
 
 There are two ways to sign in, and for some accounts only the second one works.
 

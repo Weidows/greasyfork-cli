@@ -24,7 +24,8 @@ import {
 import { Client, MAIN_SITE, VERSION, type ClientOptions } from './client.js';
 import { CookieJar } from './cookie.js';
 import { human, orDash, shortDate, table } from './format.js';
-import type { ScriptTypeName } from './form.js';
+import type { ScriptTypeName, SyncTypeName } from './form.js';
+import { SYNC_TYPE_NAMES } from './form.js';
 import { looksLikeSignIn } from './htmlform.js';
 import { baseName, isNewer, metaFirst, metaUrlFrom, parseScriptId, parseUserscriptMeta, safeFilename } from './meta.js';
 import {
@@ -39,7 +40,9 @@ import {
 import {
   clearSession,
   currentUser,
+  currentUserIdentity,
   describeError,
+  listOwnScripts,
   loadSession,
   login,
   saveSession,
@@ -47,6 +50,7 @@ import {
   sessionPath,
   SESSION_COOKIE_NAME,
 } from './session.js';
+import { scriptIdOf, readSyncState, syncScript, SyncError, type SyncAction } from './sync.js';
 import { SORT_NAMES, type Script, type SortName } from './types.js';
 import { confirm, isInteractive, prompt, promptHidden, readStdin } from './tty.js';
 
@@ -585,8 +589,29 @@ async function cmdPublish(argv: string[]): Promise<void> {
     throw new Error(`unknown --type ${JSON.stringify(scriptType)} (public, unlisted, library)`);
   }
 
+  // Code syncing is a create-only setting: the update route never reads
+  // `import_url`, so accepting these with `--id` would silently do nothing.
+  const syncUrl = stringValue(values, 'sync-url');
+  const syncType = (stringValue(values, 'sync-type') || 'automatic') as SyncTypeName;
+  if (syncUrl && !/^https?:\/\//i.test(syncUrl)) {
+    throw new Error(`--sync-url must be http(s) — the site rejects anything else`);
+  }
+  if (syncType && !SYNC_TYPE_NAMES.includes(syncType)) {
+    throw new Error(
+      `unknown --sync-type ${JSON.stringify(syncType)} (${SYNC_TYPE_NAMES.join(', ')})`,
+    );
+  }
+  // `--type` suppresses id inference, which is what makes a create possible for a
+  // file whose meta points at an existing script.
   const inferred = scriptType ? undefined : inferScriptId(info);
   const id = explicitId ? scriptId(explicitId) : inferred;
+  if (syncUrl && id) {
+    throw new Error(
+      `--sync-url only works when creating a script, but this would update ${id} — ` +
+        'Greasy Fork reads the sync settings only on creation, so change the existing ' +
+        'script\'s syncing on the site instead (or drop --id/--type to create a new one)',
+    );
+  }
   const json = booleanValue(values, 'json');
   const dryRun = booleanValue(values, 'dry-run');
   const force = booleanValue(values, 'force');
@@ -604,11 +629,13 @@ async function cmdPublish(argv: string[]): Promise<void> {
   if (!json) {
     out(`${id ? 'updating' : 'creating'} ${describeSource(info, target)}`);
     if (id) out(`target  : ${client.mainSite}/${client.locale}/scripts/${id}`);
+    if (syncUrl) out(`sync    : ${syncType} ← ${syncUrl}`);
   }
 
   const result = await publish(client, target, {
     ...(id ? { scriptId: id } : {}),
     ...(scriptType ? { scriptType: scriptType as ScriptTypeName } : {}),
+    ...(syncUrl ? { syncUrl, syncType } : {}),
     ...(stringValue(values, 'changelog') ? { changelog: stringValue(values, 'changelog') } : {}),
     ...(stringValue(values, 'info') ? { additionalInfo: stringValue(values, 'info') } : {}),
     force,
@@ -637,6 +664,128 @@ async function cmdPublish(argv: string[]): Promise<void> {
 // --------------------------------------------------------------------------- //
 
 const jsonOption: Record<string, OptDef> = { json: { type: 'boolean' } };
+
+/**
+ * List the signed-in account's own scripts.
+ *
+ * Reads the profile JSON rather than the search API so the list can include what a
+ * public profile would hide — the owner's own request takes `api_as_json`'s
+ * `as_json(include: :scripts)` branch, which is the unfiltered association.
+ */
+async function cmdList(argv: string[]): Promise<void> {
+  const { values } = parse(listCommand, argv);
+  const json = booleanValue(values, 'json');
+  const client = requireSession(values);
+
+  const own = await listOwnScripts(client);
+  if (!own) {
+    // A stored file is not proof the session still works; the site can revoke it.
+    if (json) printJson({ signedIn: false, sessionFile: sessionPath() });
+    else out('not signed in (the stored session was rejected — run `gf login` again)');
+    return;
+  }
+
+  const all = own.scripts;
+  const scripts = booleanValue(values, 'alive') ? all.filter((s) => !s.deleted) : all;
+
+  if (json) {
+    printJson({ user: own.identity, scripts });
+    return;
+  }
+  if (scripts.length === 0) {
+    out(`${own.identity.name} has no scripts yet`);
+    return;
+  }
+  out(`${own.identity.name}  [id ${own.identity.id}] · ${scripts.length} script(s)`);
+  out(own.identity.url);
+  out('');
+  out(
+    table(
+      ['ID', 'Name', 'Ver', 'Updated', 'Daily', 'Total', 'Flags'],
+      scripts.map((s) => [
+        String(s.id),
+        s.name,
+        orDash(s.version),
+        shortDate(s.updatedAt),
+        human(s.dailyInstalls),
+        human(s.totalInstalls),
+        s.deleted ? 'deleted' : '',
+      ]),
+      { 1: 44 },
+    ),
+  );
+}
+
+/**
+ * Show or change a script's code syncing.
+ *
+ * No flags is a **read**, so it never asks for confirmation and is safe to run on
+ * the script syncing in production. Changing anything needs a URL, or the script
+ * must already have one.
+ */
+async function cmdSync(argv: string[]): Promise<void> {
+  const { values, positionals } = parse(syncCommand, argv);
+  const id = scriptIdOf(requirePositional(positionals, 'sync <script-id>'));
+  const json = booleanValue(values, 'json');
+  const client = requireSession(values);
+
+  const url = stringValue(values, 'url');
+  const type = stringValue(values, 'type');
+  if (type && !SYNC_TYPE_NAMES.includes(type as SyncTypeName)) {
+    throw new SyncError(
+      `unknown --type ${JSON.stringify(type)} (${SYNC_TYPE_NAMES.join(', ')})`,
+    );
+  }
+  if (url && !/^https?:\/\//i.test(url)) {
+    throw new SyncError(
+      `--url must be a http(s) URL — the site rejects anything else, got ${JSON.stringify(url)}`,
+    );
+  }
+
+  const stop = booleanValue(values, 'stop');
+  const now = booleanValue(values, 'now');
+  const dryRun = booleanValue(values, 'dry-run');
+  if (stop && (url || type)) {
+    throw new SyncError('--stop turns syncing off, so it cannot be combined with --url or --type');
+  }
+
+  // Read-only: the common case, and the one that must never change anything.
+  if (!stop && !now && !url && !type && !dryRun) {
+    const { state } = await readSyncState(client, id);
+    if (json) {
+      printJson({ id, syncing: state.url !== '', url: state.url, type: state.type || null });
+      return;
+    }
+    out(`script ${id}`);
+    if (state.url) out(`sync    : ${state.type || 'automatic'} ← ${state.url}`);
+    else out('sync    : off (no source bound)');
+    return;
+  }
+
+  const action: SyncAction = stop ? 'stop' : now ? 'pull' : 'save';
+  const result = await syncScript(client, id, {
+    ...(url ? { url } : {}),
+    ...(type ? { type: type as SyncTypeName } : {}),
+    action,
+    dryRun,
+  });
+
+  if (json) {
+    printJson({ id, ...result });
+    return;
+  }
+  if (dryRun) {
+    out('dry run — nothing was sent');
+    out(
+      result.state
+        ? `would set: ${result.state.type} ← ${result.state.url} (${result.action})`
+        : `would turn syncing off (${result.action})`,
+    );
+    return;
+  }
+  out(result.state ? `syncing: ${result.state.type} ← ${result.state.url}` : 'syncing is now off');
+  if (result.notice) out(`site: ${result.notice}`);
+}
 
 export const searchCommand: Command = {
   name: 'search',
@@ -761,16 +910,45 @@ const whoamiCommand: Command = {
   run: cmdWhoami,
 };
 
+const listCommand: Command = {
+  name: 'list',
+  aliases: ['ls'],
+  usage: 'list [--json] [--alive]',
+  brief: 'list the scripts you own (needs login)',
+  options: { alive: { type: 'boolean' }, ...jsonOption },
+  run: cmdList,
+};
+
+const syncCommand: Command = {
+  name: 'sync',
+  aliases: [],
+  usage:
+    'sync <script-id> [--url U] [--type manual|automatic|webhook] [--now] [--stop] [--dry-run] [--json]\n' +
+    '                    (no flags = show the current setting)',
+  brief: 'show or change a script\'s code syncing (needs login)',
+  options: {
+    url: { type: 'string' },
+    type: { type: 'string' },
+    now: { type: 'boolean' },
+    stop: { type: 'boolean' },
+    'dry-run': { type: 'boolean' },
+    ...jsonOption,
+  },
+  run: cmdSync,
+};
+
 const publishCommand: Command = {
   name: 'publish',
   aliases: ['push'],
   usage:
     'publish <file.user.js> [--id N] [--type public|unlisted|library] [--changelog T] [--info T]\n' +
-    '                    [--force] [--dry-run] [--json]',
+    '                    [--sync-url U [--sync-type manual|automatic|webhook]] [--force] [--dry-run] [--json]',
   brief: 'publish or update a script (needs login)',
   options: {
     id: { type: 'string' },
     type: { type: 'string' },
+    'sync-url': { type: 'string' },
+    'sync-type': { type: 'string' },
     changelog: { type: 'string' },
     info: { type: 'string' },
     force: { type: 'boolean' },
@@ -793,7 +971,9 @@ export const COMMANDS: Command[] = [
   loginCommand,
   logoutCommand,
   whoamiCommand,
+  listCommand,
   publishCommand,
+  syncCommand,
 ];
 
 function usage(): void {

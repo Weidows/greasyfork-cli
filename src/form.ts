@@ -47,6 +47,24 @@ export const SCRIPT_TYPES = {
 export type ScriptTypeName = keyof typeof SCRIPT_TYPES;
 
 /**
+ * Greasy Fork's `Script.sync_type` enum — how often the site re-pulls the code
+ * from the script's `sync_identifier` URL.
+ *
+ * Sent by **name**, not by id: the controller's own fallback is the string
+ * `params['sync_type'] || 'manual'`, and a Rails enum setter takes a name. The
+ * numbers are recorded only to document the order in the model.
+ */
+export const SYNC_TYPES = {
+  manual: 1,
+  automatic: 2,
+  webhook: 3,
+} as const;
+
+export type SyncTypeName = keyof typeof SYNC_TYPES;
+
+export const SYNC_TYPE_NAMES = Object.keys(SYNC_TYPES) as SyncTypeName[];
+
+/**
  * Every `script_version[…]` checkbox the server offers as a "do you really mean
  * it" gate. Each is rendered only when the corresponding warning fires, so the
  * publish flow reads the flags out of the rejected response rather than guessing.
@@ -80,6 +98,16 @@ export interface PublishPayloadInput {
   /** Numeric Greasy Fork locale id; omitted means auto-detect. */
   localeId?: string;
   adultContent?: boolean;
+  /**
+   * Code syncing — **create only**.
+   *
+   * With a `syncUrl`, Greasy Fork stops treating the posted body as the source of
+   * truth and pulls the code from that URL instead, on the `syncType` schedule.
+   * The update route does not read either field, so this has to be set when the
+   * script is first created; afterwards it is a browser-only setting.
+   */
+  syncUrl?: string;
+  syncType?: SyncTypeName;
   /** Warning overrides to force on this attempt. */
   overrides?: readonly string[];
 }
@@ -92,12 +120,32 @@ export interface PublishPayloadInput {
 export function buildPublishPayload(input: PublishPayloadInput): FormFields {
   const fields: FormFields = [['authenticity_token', input.token]];
 
+  // Top-level, NOT `script_version[…]`: the controller reads `params[:import_url]`
+  // and `params[:sync_type]` directly, and only on the create path. `sync_type`
+  // is ignored without `import_url` (both are read inside the same `if`), so it
+  // is never sent alone.
+  if (input.syncUrl) {
+    fields.push(['import_url', input.syncUrl]);
+    fields.push(['sync_type', input.syncType ?? 'automatic']);
+  }
+
   if (input.language) fields.push(['language', input.language]);
   if (input.scriptType) fields.push(['script[script_type]', String(SCRIPT_TYPES[input.scriptType])]);
   if (input.localeId) fields.push(['script[locale_id]', input.localeId]);
   if (input.adultContent) fields.push(['script[adult_content_self_report]', '1']);
 
   fields.push(['script_version[code]', input.code]);
+
+  // Required, even though the value is empty.
+  //
+  // `create` runs `svp['attachments'].reject { … }` unconditionally, and
+  // ActionController's `expect(script_version: [ … { attachments: [] } ])` yields
+  // **nil**, not `[]`, when the key is absent — so a POST without this field dies
+  // as a 500 with an empty body, not as a validation error. A browser never hits
+  // it because a `multiple` file input submits an empty entry even when no file is
+  // chosen; only a hand-built payload can omit it. Measured: adding this empty
+  // field turned a 500 into an ordinary validation response.
+  fields.push(['script_version[attachments][]', '']);
 
   if (input.changelog) {
     fields.push(['script_version[changelog]', input.changelog]);

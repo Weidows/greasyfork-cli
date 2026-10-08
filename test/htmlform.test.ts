@@ -163,8 +163,24 @@ describe('pageSummary', () => {
 });
 
 describe('findScriptName / stripTags', () => {
-  it('reads the page heading', () => {
+  it('reads the page title', () => {
+    // A script page sets <title> from @script.name, and carries NO meaningful h1:
+    // every <h1> on it is the site's own header, so an h1 grab reported "Greasy
+    // Fork" as the script's name on the first real publish.
+    expect(findScriptName('<title>My Script</title>')).toBe('My Script');
+  });
+
+  it('drops a trailing site-name suffix when a page adds one', () => {
+    expect(findScriptName('<title>My Script - Greasy Fork</title>')).toBe('My Script');
+    expect(findScriptName('<title>My Script | Greasy Fork</title>')).toBe('My Script');
+  });
+
+  it('falls back to the heading when there is no title', () => {
     expect(findScriptName('<h1>My Script</h1>')).toBe('My Script');
+  });
+
+  it('prefers the title over a site-name heading', () => {
+    expect(findScriptName('<title>Real Name</title><h1>Greasy Fork</h1>')).toBe('Real Name');
   });
 
   it('collapses whitespace and drops script bodies', () => {
