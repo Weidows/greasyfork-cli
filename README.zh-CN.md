@@ -12,7 +12,6 @@
 [![license](https://img.shields.io/github/license/Weidows/greasyfork-cli?style=flat-square)](LICENSE)
 [![node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen?style=flat-square)](package.json)
 [![release workflow](https://github.com/Weidows/greasyfork-cli/actions/workflows/release.yml/badge.svg)](https://github.com/Weidows/greasyfork-cli/actions/workflows/release.yml)
-[![publish workflow](https://github.com/Weidows/greasyfork-cli/actions/workflows/publish-npm.yml/badge.svg)](https://github.com/Weidows/greasyfork-cli/actions/workflows/publish-npm.yml)
 
 > **非官方项目。** 社区客户端，与 Greasy Fork 官方及其维护者无关，也未获其背书。它读取站点公开的 JSON 接口；而 `login` / `publish` 是驱动站点自身的 HTML 表单 —— 那不属于任何成文 API，随时可能改版失效，把它当便利工具而非稳定契约。
 >
@@ -279,20 +278,31 @@ git push --follow-tags
 
 | workflow 文件 | 作用 |
 |---|---|
-| `.github/workflows/release.yml` | 编译 5 个平台、给 macOS 产物做 ad-hoc 签名、**打成 tar.gz/zip**、生成 `SHA256SUMS.txt`、发布 GitHub Release |
-| `.github/workflows/publish-npm.yml` | 把 `@greasyfork/cli` 发到 npm，并带 provenance |
+| `.github/workflows/release.yml` | 编译 5 个平台、给 macOS 产物做 ad-hoc 签名、**打成 tar.gz/zip**、生成 `SHA256SUMS.txt`、发布 GitHub Release，并把同一版本发到 npm |
 
-两者都可以在 Actions 页面手动触发；都需要填版本号，与 `package.json` 不一致会直接失败 —— 所以 tarball / 二进制 / npm 版本三者不可能对不上。
+可以在 Actions 页面手动触发；需要填版本号，与 `package.json` 不一致会直接失败 —— 所以 tarball / 二进制 / npm 版本三者不可能对不上。
 
-### 开启 npm 自动发布
+### npm 发布 —— 只走 Trusted Publishing，不需要 token
 
-**方案 A —— npm token。** 到 npmjs.com 建 **Granular Access Token**：权限 read + write、范围限定 `@greasyfork`、**必须开启 Bypass 2FA**（账号 2FA 是 `auth-and-writes`，而 CI runner 输不了一次性验证码）。存为仓库 secret `NPM_TOKEN`。
+仓库里**没有 `NPM_TOKEN` secret**。`npm` job 用 OIDC（`id-token: write`）换短时发布凭证，provenance 也由它自动生成，所以不需要 `--provenance`。
 
-**方案 B —— Trusted Publisher（不用 secret）。** 包在 npm 上存在过一次之后，到包设置里加 Trusted Publisher：仓库 `Weidows/greasyfork-cli`、workflow **`publish-npm.yml`**、**Environment 留空** —— 然后把 workflow 里那行 `NODE_AUTH_TOKEN` 删掉即可。
+信任关系配在 npm 包设置里，字段必须严格一致：
 
-> workflow 文件名本身是配置的一部分：改名 `publish-npm.yml` 会让它静默失效。
+| 字段 | 值 |
+|---|---|
+| Repository | `Weidows/greasyfork-cli` |
+| Workflow filename | `release.yml` |
+| Environment | *（留空 —— workflow 里没有声明）* |
+| Allowed actions | `npm publish` |
 
-workflow 发布前会先升级 npm（Node 22 自带 npm 10.x，而 trusted publishing 需要 npm ≥ 11.5.1）；若该版本已在 npm 上会**打 notice 直接跳过**，重推 tag 不会把 run 弄红。
+改 workflow 文件名、或把它指向另一个 workflow，都会让发布直接 `ENEEDAUTH`。重建绑定：
+
+```bash
+npm trust github @greasyfork/cli --repo Weidows/greasyfork-cli --file release.yml \
+  --allow-publish -y --registry=https://registry.npmjs.org
+```
+
+发布前会先升级 npm（trusted publishing 需要 npm ≥ 11.5.1）；若该版本已在 npm 上会**打 notice 直接跳过**，重推 tag 不会把 run 弄红。
 
 ## 用到的接口
 

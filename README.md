@@ -14,7 +14,6 @@ dependencies · ships a typed library *and* the `gf` command.
 [![license](https://img.shields.io/github/license/Weidows/greasyfork-cli?style=flat-square)](LICENSE)
 [![node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen?style=flat-square)](package.json)
 [![release workflow](https://github.com/Weidows/greasyfork-cli/actions/workflows/release.yml/badge.svg)](https://github.com/Weidows/greasyfork-cli/actions/workflows/release.yml)
-[![publish workflow](https://github.com/Weidows/greasyfork-cli/actions/workflows/publish-npm.yml/badge.svg)](https://github.com/Weidows/greasyfork-cli/actions/workflows/publish-npm.yml)
 
 > **Unofficial.** A community client, not affiliated with or endorsed by Greasy Fork or its
 > maintainers. It reads the site's public JSON API, and — for `login` / `publish` — drives the
@@ -344,26 +343,36 @@ git push --follow-tags
 
 | Workflow file | What it does |
 |---|---|
-| `.github/workflows/release.yml` | Compiles five platforms, ad-hoc signs the macOS ones, packs archives, writes `SHA256SUMS.txt`, publishes a GitHub Release |
-| `.github/workflows/publish-npm.yml` | Publishes `@greasyfork/cli` to npm with provenance |
+| `.github/workflows/release.yml` | Compiles five platforms, ad-hoc signs the macOS ones, packs archives, writes `SHA256SUMS.txt`, publishes a GitHub Release, and publishes the same version to npm |
 
-Both can be started by hand from the Actions tab; each takes the version and fails when it does
-not match `package.json`, so a tarball, a binary and an npm version can never disagree.
+It can be started by hand from the Actions tab; it takes the version and fails when it does not
+match `package.json`, so a tarball, a binary and an npm version can never disagree.
 
-### Enabling the npm publish
+### npm publishing — Trusted Publishing only, no token
 
-**Option A — npm token.** Create a **Granular Access Token** on npmjs.com: read + write, scoped to
-`@greasyfork`, **Bypass 2FA enabled** (the account uses `auth-and-writes`, and a CI runner cannot
-type a one-time password). Store it as the repository secret `NPM_TOKEN`.
+There is **no `NPM_TOKEN` secret**. The `npm` job authenticates with OIDC (`id-token: write`),
+which npm exchanges for a short-lived publish credential; the provenance attestation comes with it
+automatically, so no `--provenance` flag is needed.
 
-**Option B — Trusted Publisher (no secret).** Once the package exists on npm, add a Trusted
-Publisher in its settings: repository `Weidows/greasyfork-cli`, workflow **`publish-npm.yml`**,
-environment **empty** — then delete the `NODE_AUTH_TOKEN` line from the workflow.
+The trust relationship lives on npm (package settings → Trusted Publisher) and must match exactly:
 
-> The workflow file name is part of that configuration: renaming `publish-npm.yml` breaks it.
+| Field | Value |
+|---|---|
+| Repository | `Weidows/greasyfork-cli` |
+| Workflow filename | `release.yml` |
+| Environment | *(empty — the workflow declares none)* |
+| Allowed actions | `npm publish` |
 
-The workflow upgrades npm before publishing (Node 22 ships npm 10.x; trusted publishing needs
-npm ≥ 11.5.1) and skips cleanly with a notice when the version is already live.
+Renaming the workflow file, or pointing the binding at another workflow, breaks publishing with
+`ENEEDAUTH`. Recreate the binding with:
+
+```bash
+npm trust github @greasyfork/cli --repo Weidows/greasyfork-cli --file release.yml \
+  --allow-publish -y --registry=https://registry.npmjs.org
+```
+
+The job upgrades npm before publishing (trusted publishing needs npm ≥ 11.5.1) and skips cleanly
+with a notice when the version is already live.
 
 ## Endpoints used
 

@@ -1,6 +1,8 @@
 name: release
 
-# Builds the prebuilt binaries and attaches them to a GitHub Release.
+# One file, two jobs: build the prebuilt binaries and attach them to a GitHub
+# Release, and publish the same version to npm with Trusted Publishing (OIDC) —
+# no npm token anywhere.
 #
 # Trigger by pushing a v* tag, or manually from the Actions tab (the manual run
 # asks for the version so tag and package.json cannot drift apart).
@@ -15,6 +17,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write # npm Trusted Publishing (OIDC)
 
 concurrency:
   group: release-${{ github.ref }}
@@ -173,3 +176,42 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: out/archives/*
+
+  # npm: Trusted Publishing. 绑在 npm 上的身份是
+  #   github · Weidows/greasyfork-cli · release.yml · allow: npm publish
+  # 文件名是信任契约的一部分 —— 改名 = 立即 ENEEDAUTH。
+  # 不需要 NPM_TOKEN：`id-token: write` 让 runner 换取短时发布凭证，
+  # provenance 也由 OIDC 自动生成（不必写 --provenance）。
+  npm:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - run: npm ci
+
+      # trusted publishing 要 npm >= 11.5.1；别依赖镜像自带的版本
+      - run: npm install -g npm@^11.15.0 && npm --version
+
+      # 幂等：重推 tag 不该因为版本已存在而红。
+      - name: Skip when this version is already on npm
+        id: gate
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          if npm view "@greasyfork/cli@$VERSION" version >/dev/null 2>&1; then
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            echo "::notice::@greasyfork/cli@$VERSION is already on npm — nothing to publish"
+          fi
+
+      # prepublishOnly 跑 build + test，所以这里不用单独构建。
+      # 永远不要加 --ignore-scripts：那会发出 dist/ 里还带 __VERSION__ 占位的包。
+      - if: steps.gate.outputs.skip != '1'
+        run: npm publish
