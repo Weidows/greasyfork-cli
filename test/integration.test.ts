@@ -86,13 +86,25 @@ ${flash}
 }
 
 /** The publish form. No class and no id, exactly like the real one. */
-function publishFormPage(action: string, warnings = '', errors = ''): string {
+function publishFormPage(action: string, warnings = '', errors = '', updating = false): string {
   return `<html><body>
 ${errors}
 <form action="${action}" method="post" enctype="multipart/form-data">
   <input type="hidden" name="authenticity_token" value="PUB_TOKEN" />
   <input type="hidden" name="language" value="js" />
-  <input type="radio" name="script[script_type]" value="1" checked />
+  <input type="radio" name="script[script_type]" value="1" ${updating ? '' : 'checked'} />
+  <input type="radio" name="script[script_type]" value="2" ${updating ? 'checked="checked"' : ''} />
+  ${updating ? `
+  <input type="hidden" name="script_version[attachments][]" value="existing-attachment" />
+  <input type="file" name="script_version[attachments][]" />
+  <input type="hidden" name="script_version[additional_info][0][attribute_default]" value="true" />
+  <input type="radio" name="script_version[additional_info][0][value_markup]" value="html" />
+  <input type="radio" name="script_version[additional_info][0][value_markup]" value="markdown" checked />
+  <textarea name="script_version[additional_info][0][attribute_value]">
+**Original** &amp; preserved</textarea>
+  <select name="script_version[additional_info][1][locale]"><option value="33">English</option><option value="17" selected="selected">German</option></select>
+  <textarea name="script_version[additional_info][1][attribute_value]">Beschreibung</textarea>
+  ` : ''}
   <select name="script[locale_id]"><option value="">Auto</option><option value="33">English</option></select>
   <textarea name="script_version[code]"></textarea>
   <input type="file" name="code_upload" />
@@ -219,10 +231,16 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
       return html(publishFormPage('/en/script_versions'));
     }
     const updateForm = /^(\/en\/scripts\/\d+)\/versions\/new$/.exec(url);
-    if (updateForm) return html(publishFormPage(`${updateForm[1]}/versions`));
+    if (updateForm) return html(publishFormPage(`${updateForm[1]}/versions`, '', '', true));
 
     if (method === 'POST' && /^\/en\/(script_versions|scripts\/\d+\/versions)$/.test(url)) {
+      if (url.endsWith('/versions') && new URLSearchParams(body).get('script[script_type]') !== '2') {
+        return respond(400, { 'Content-Type': 'text/html' }, '');
+      }
       // Behaviour switches are driven by markers inside the submitted code.
+      if (body.includes('MODE_BAD_REQUEST')) return respond(400, { 'Content-Type': 'text/html' }, '');
+      if (body.includes('MODE_HISTORY')) return redirect(url);
+      if (body.includes('MODE_STALE')) return redirect(`${SCRIPT_PAGE}?stale=1`);
       if (body.includes('MODE_REJECT')) {
         return html(
           publishFormPage(
@@ -238,7 +256,11 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
       return redirect(SCRIPT_PAGE);
     }
 
-    if (url === SCRIPT_PAGE) return html('<html><body><h1>Fixture Script</h1></body></html>');
+    if (url === SCRIPT_PAGE || url === `${SCRIPT_PAGE}?stale=1`) {
+      const version = url.includes('?') ? '2.0.0' : '2.1.0';
+      return html(`<html><body><h1>Fixture Script</h1><dd class="script-show-version"><span>${version}</span></dd></body></html>`);
+    }
+    if (url === '/en/scripts/98765/versions') return html('<html><body>Version history</body></html>');
 
     res.writeHead(404, { 'Content-Type': 'text/html' }).end('<p>not found</p>');
   });
@@ -416,7 +438,7 @@ describe('publish', () => {
     expect(post.referer).toBe(`${base}/en/script_versions/new`);
   });
 
-  it('updates an existing script, and never creates a duplicate', async () => {
+  it('updates an existing script and preserves its type, attachments, and descriptions', async () => {
     seen.length = 0;
     const file = writeFixture('update.user.js', SCRIPT);
     const result = await publish(localClient(signedInJar()), file, {
@@ -427,10 +449,23 @@ describe('publish', () => {
     expect(result.created).toBe(false);
     const post = seen.find((r) => r.method === 'POST')!;
     expect(post.url).toBe('/en/scripts/98765/versions');
-    // The create-only fields must not be sent on an update: they would rename or
-    // re-type an existing script.
-    expect(post.body).not.toContain('script%5Bscript_type%5D');
-    expect(post.body).not.toContain('language=js');
+    const fields = new URLSearchParams(post.body);
+    expect(fields.getAll('script[script_type]')).toEqual(['2']);
+    expect(fields.getAll('script_version[attachments][]')).toContain('existing-attachment');
+    expect(fields.get('script_version[additional_info][0][attribute_value]')).toBe('**Original** & preserved');
+    expect(fields.getAll('script_version[additional_info][0][value_markup]')).toEqual(['markdown']);
+    expect(fields.get('script_version[additional_info][1][locale]')).toBe('17');
+    expect(fields.get('script_version[additional_info][1][attribute_value]')).toBe('Beschreibung');
+    expect(fields.has('language')).toBe(false);
+  });
+
+  it.each([
+    ['MODE_BAD_REQUEST', /HTTP 400/],
+    ['MODE_HISTORY', /not published/],
+    ['MODE_STALE', /did not confirm.*2\.1\.0.*2\.0\.0/],
+  ] as const)('does not report an update on %s', async (mode, error) => {
+    const file = writeFixture(`${mode}.user.js`, SCRIPT.replace("('hi')", `('${mode}')`));
+    await expect(publish(localClient(signedInJar()), file, { scriptId: 98765 })).rejects.toThrow(error);
   });
 
   it('surfaces server-side validation errors instead of a bare failure', async () => {

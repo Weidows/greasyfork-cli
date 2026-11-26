@@ -7,8 +7,8 @@
  *     `/<locale>/scripts/<id>/versions/new` (update).
  *   - It POSTs to `/<locale>/script_versions` / `/<locale>/scripts/<id>/versions`.
  *   - Success is a **302 to `/scripts/<id>-<slug>`**; a rejected submission is a
- *     **200 that re-renders the form**, so the status code alone cannot tell the
- *     two apart and the final URL is what decides.
+ *     **200 that re-renders the form**. Check both the HTTP status and the
+ *     redirect target before reporting success.
  *   - Warnings ("version not incremented", "no namespace", …) are rendered as
  *     `script_version[…]` checkboxes the author is expected to confirm. They are
  *     not bypassed automatically: `--force` applies them, otherwise they are
@@ -27,6 +27,7 @@ import type { HttpResponse } from './http.js';
 import {
   buildPublishPayload,
   overridesFrom,
+  SCRIPT_TYPES,
   type FormFields,
   type ScriptTypeName,
   type SyncTypeName,
@@ -35,10 +36,14 @@ import {
   findAuthenticityToken,
   findFlash,
   findFormContaining,
+  findInputs,
   findScriptName,
+  findSelects,
+  findTextareas,
   findValidationErrors,
   looksLikeSignIn,
   pageSummary,
+  stripTags,
 } from './htmlform.js';
 import { compareVersions, metaAll, metaFirst, parseScriptId, parseSourceMeta, type UserscriptMeta } from './meta.js';
 
@@ -176,6 +181,9 @@ function updateUrl(client: Client, id: number): string {
 interface PublishForm {
   action: string;
   token: string;
+  scriptType: ScriptTypeName | undefined;
+  attachments: FormFields;
+  additionalInfo: FormFields;
   /** Present when the page is a rejection rather than a fresh form. */
   problems: string[];
   warnings: string[];
@@ -202,20 +210,49 @@ async function loadForm(client: Client, url: string): Promise<PublishForm> {
         : `no publish form at ${url}`,
     );
   }
+  const inputs = findInputs(form.html, true);
+  const typeValue = inputs.find(({ name }) => name === 'script[script_type]')?.value;
+  const scriptType = (Object.keys(SCRIPT_TYPES) as ScriptTypeName[]).find(
+    (type) => String(SCRIPT_TYPES[type]) === typeValue,
+  );
+  const fields = [
+    ...inputs,
+    ...findTextareas(form.html),
+    ...findSelects(form.html).map(({ name, selected, values }) => ({
+      name,
+      value: selected || values[0] || '',
+    })),
+  ];
   return {
     action: form.action.startsWith('http') ? form.action : `${client.mainSite}${form.action}`,
     token: findAuthenticityToken(form.html),
+    scriptType,
+    attachments: inputs
+      .filter(({ name, value }) => name === 'script_version[attachments][]' && value !== '')
+      .map(({ name, value }) => [name, value]),
+    additionalInfo: fields
+      .filter(({ name }) =>
+        /^script_version\[additional_info\]\[\d+\]\[(attribute_default|attribute_value|value_markup|locale)\]$/.test(name),
+      )
+      .map(({ name, value }) => [name, value]),
     problems: findValidationErrors(res.body),
     warnings: overridesFrom(res.body),
   };
 }
 
-/** The script page a successful publish redirects to, or null. */
-function scriptPageOf(finalUrl: string): { id?: number; url: string } | null {
-  const m = /\/scripts\/(\d+)(?:-([^/?#]+))?/.exec(finalUrl);
-  if (!m) return null;
-  if (finalUrl.includes('/versions/')) return null;
-  return { ...(m[1] ? { id: Number.parseInt(m[1], 10) } : {}), url: finalUrl };
+/** The canonical script page a successful publish redirects to, or null. */
+function scriptPageOf(
+  res: HttpResponse,
+  mainSite: string,
+  expectedId?: number,
+): { id: number; url: string } | null {
+  if (res.status < 200 || res.status >= 300 || res.redirects === 0) return null;
+  const url = new URL(res.finalUrl);
+  if (url.origin !== new URL(mainSite).origin) return null;
+  const match = /^(?:\/[^/]+)?\/scripts\/(\d+)(?:-[^/]+)?\/?$/.exec(url.pathname);
+  if (!match) return null;
+  const id = Number.parseInt(match[1]!, 10);
+  return expectedId === undefined || id === expectedId ? { id, url: res.finalUrl } : null;
 }
 
 /**
@@ -249,16 +286,20 @@ export async function publish(
       form.problems,
     );
   }
+  if (forUpdate && !form.scriptType) {
+    throw new PublishError('the update form did not specify the existing script type');
+  }
 
   const overrides = options.force ? form.warnings : [];
-  const payload = (token: string, confirmed: readonly string[]): FormFields =>
-    buildPublishPayload({
+  // A version update must keep the form's existing type, screenshots and descriptions.
+  const payload = (token: string, confirmed: readonly string[]): FormFields => [
+    ...buildPublishPayload({
       code: source,
       token,
+      scriptType: forUpdate ? form.scriptType : options.scriptType ?? 'public',
       ...(forUpdate
         ? {}
         : {
-            scriptType: options.scriptType ?? 'public',
             language: info.kind,
             // Syncing rides along with the other create-only fields because the
             // update route never reads `import_url`/`sync_type`. Set it at
@@ -270,7 +311,10 @@ export async function publish(
       ...(options.changelog ? { changelog: options.changelog } : {}),
       ...(options.additionalInfo ? { additionalInfo: options.additionalInfo } : {}),
       overrides: confirmed,
-    });
+    }),
+    ...(forUpdate ? form.attachments : []),
+    ...(forUpdate && !options.additionalInfo ? form.additionalInfo : []),
+  ];
 
   if (options.dryRun) {
     step(`POST ${form.action} (dry run — nothing sent)`);
@@ -293,7 +337,7 @@ export async function publish(
   }
 
   let applied = overrides;
-  let site = scriptPageOf(res.finalUrl);
+  let site = scriptPageOf(res, client.mainSite, options.scriptId);
 
   // Rejected on the first try, with warnings still pending: confirm them once if
   // asked to. A second failure is reported rather than looped on.
@@ -303,16 +347,30 @@ export async function publish(
     step(`confirming ${pending.length} warning(s) and resubmitting`);
     const retryToken = findAuthenticityToken(res.body) || form.token;
     res = await client.submitForm(form.action, payload(retryToken, applied), { referer: formUrl });
-    site = scriptPageOf(res.finalUrl);
+    site = scriptPageOf(res, client.mainSite, options.scriptId);
   }
 
   if (!site) throw refusal(res, info.name);
+
+  if (forUpdate) {
+    const versionElement =
+      /<dd\b[^>]*class=["'][^"']*\bscript-show-version\b[^"']*["'][^>]*>([\s\S]*?)<\/dd>/i.exec(res.body);
+    const version = versionElement
+      ? stripTags(versionElement[1]!)
+      : await publishedVersion(client, site.id);
+    if (version !== info.version) {
+      throw new PublishError(
+        `Greasy Fork did not confirm ${info.name} ${info.version} after submission` +
+          (version ? ` (the script page reports ${version})` : ''),
+      );
+    }
+  }
 
   return {
     name: findScriptName(res.body) || info.name,
     version: info.version,
     url: site.url,
-    ...(site.id !== undefined ? { scriptId: site.id } : {}),
+    scriptId: site.id,
     created: !forUpdate,
     overrides: applied,
   };
@@ -359,6 +417,9 @@ function refusal(res: HttpResponse, name: string): PublishError {
   }
   if (flash.alert) return new PublishError(`${name} was not published: ${flash.alert}`);
   if (summary) return new PublishError(`${name} was not published: ${summary}`);
+  if (res.status >= 400) {
+    return new PublishError(`${name} was not published — the site answered HTTP ${res.status}`);
+  }
   return new PublishError(`${name} was not published (the site re-rendered the form)`);
 }
 

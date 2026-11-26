@@ -56,13 +56,36 @@ export function findAuthenticityToken(html: string): string {
   return '';
 }
 
-/** Every `<input>` in a fragment, as name → value (submit buttons included). */
-export function findInputs(html: string): FormField[] {
+/** Inputs in a fragment. With successfulOnly, omit inputs a browser would not submit. */
+export function findInputs(html: string, successfulOnly = false): FormField[] {
   const out: FormField[] = [];
   const re = /<input[^>]*>/gi;
   for (let m = re.exec(html); m; m = re.exec(html)) {
-    const attrs = parseAttributes(m[0]);
+    const tag = m[0];
+    const attrs = parseAttributes(tag);
+    if (successfulOnly) {
+      const type = attrs.type?.toLowerCase();
+      const bareTag = tag.replace(/"[^"]*"|'[^']*'/g, '""');
+      if (/\sdisabled(?=\s|=|\/?>)/i.test(bareTag)) continue;
+      if (type && ['submit', 'button', 'reset', 'file', 'image'].includes(type)) continue;
+      if (
+        (type === 'radio' || type === 'checkbox') &&
+        !/\schecked(?=\s|=|\/?>)/i.test(bareTag)
+      ) continue;
+    }
     if (attrs.name !== undefined) out.push({ name: attrs.name, value: attrs.value ?? '' });
+  }
+  return out;
+}
+
+/** Textareas and their initial values, with the leading HTML newline removed. */
+export function findTextareas(html: string): FormField[] {
+  const out: FormField[] = [];
+  for (const match of html.matchAll(/(<textarea\b[^>]*>)([\s\S]*?)<\/textarea>/gi)) {
+    const attrs = parseAttributes(match[1]!);
+    if (attrs.name !== undefined) {
+      out.push({ name: attrs.name, value: decodeEntities((match[2] ?? '').replace(/^\r?\n/, '')) });
+    }
   }
   return out;
 }
